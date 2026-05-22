@@ -1,0 +1,35 @@
+# CMake build artifacts
+/build/
+cmake-build-*/
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+CTestTestfile.cmake
+Testing/
+install_manifest.txt
+
+# Compiled output
+*.o
+*.a
+*.so
+*.dylib
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Editors
+/.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Local / private files
+/.scratch/
+/data/
+/docs/
+CLAUDE.md
+CONTEXT.md
