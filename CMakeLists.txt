@@ -8,3 +8,4 @@ list(APPEND CMAKE_PREFIX_PATH /opt/homebrew)
 
 enable_testing()
 add_subdirectory(src/dem_tile_loader)
+add_subdirectory(src/ocean_mask_rasterizer)
