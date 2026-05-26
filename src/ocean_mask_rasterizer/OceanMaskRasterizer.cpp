@@ -60,10 +60,70 @@ OceanMaskRasterizer::OceanMaskRasterizer(const std::string& gshhg_full_path,
             "OceanMaskRasterizer: file does not look like a GSHHG binary: "
             + gshhg_full_path);
 
-    // Rewind so downstream code can scan from the start.
+    // Rewind to start for the index build pass.
     file_.seekg(0, std::ios::beg);
 
     GDALAllRegister();
+
+    // -----------------------------------------------------------------------
+    // Build spatial index: scan every polygon header (skip point data) and
+    // record a PolyRef for each Level-1 polygon in every 1°×1° tile its
+    // bounding box overlaps.
+    // -----------------------------------------------------------------------
+    auto microdeg_to_lon = [](int32_t v) -> double {
+        double d = v * 1e-6;
+        return (d > 180.0) ? d - 360.0 : d;
+    };
+
+    while (file_) {
+        const std::streamoff hdr_offset = file_.tellg();
+
+        GshhgHeader hdr{};
+        file_.read(reinterpret_cast<char*>(&hdr), sizeof(hdr));
+        if (!file_) break;
+
+        hdr.id        = be32(hdr.id);
+        hdr.n         = be32(hdr.n);
+        hdr.flag      = be32(hdr.flag);
+        hdr.west      = be32(hdr.west);
+        hdr.east      = be32(hdr.east);
+        hdr.south     = be32(hdr.south);
+        hdr.north     = be32(hdr.north);
+        hdr.area      = be32(hdr.area);
+        hdr.area_full = be32(hdr.area_full);
+        hdr.container = be32(hdr.container);
+        hdr.ancestor  = be32(hdr.ancestor);
+
+        const int level = hdr.flag & 0xFF;
+        const int n     = hdr.n;
+
+        // Skip point data — we only need the header for the index.
+        file_.seekg(static_cast<std::streamoff>(sizeof(GshhgPoint)) * n,
+                    std::ios::cur);
+
+        if (level != 1) continue;
+
+        // Convert bounding box to degrees ([-180, 180] convention).
+        const double poly_west  = microdeg_to_lon(hdr.west);
+        const double poly_east  = microdeg_to_lon(hdr.east);
+        const double poly_south = hdr.south * 1e-6;
+        const double poly_north = hdr.north * 1e-6;
+
+        // Enumerate every 1°×1° tile that overlaps this polygon's AABB.
+        const int tile_lon_min = (int)std::floor(poly_west);
+        const int tile_lon_max = (int)std::floor(poly_east - 1e-9);
+        const int tile_lat_min = (int)std::floor(poly_south);
+        const int tile_lat_max = (int)std::floor(poly_north - 1e-9);
+
+        for (int tlat = tile_lat_min; tlat <= tile_lat_max; ++tlat) {
+            for (int tlon = tile_lon_min; tlon <= tile_lon_max; ++tlon) {
+                index_[{tlat, tlon}].push_back({hdr_offset, n});
+            }
+        }
+    }
+
+    // Clear stream state so is_water() can seek freely.
+    file_.clear();
 }
 
 // ---------------------------------------------------------------------------
@@ -74,10 +134,12 @@ OceanMaskRasterizer::OceanMaskRasterizer(const std::string& gshhg_full_path,
 // Rasterize all GSHHG Level-1 land polygons that overlap the 1°×1° tile
 // defined by (tile_lat, tile_lon) into `raster` (kTilePixels×kTilePixels
 // bytes, row-major, north-up).  Initial value 1 = water; burned value 0 = land.
+//
+// Uses the pre-built spatial index (index_) to seek directly to each polygon's
+// header instead of scanning the entire file from byte 0.
 // ---------------------------------------------------------------------------
-static void rasterize_tile(std::ifstream& file,
-                            int tile_lat, int tile_lon,
-                            std::vector<uint8_t>& raster)
+void OceanMaskRasterizer::rasterize_tile(int tile_lat, int tile_lon,
+                                          std::vector<uint8_t>& raster)
 {
     // --- Build an in-memory GDAL raster initialised to 1 (water) -----------
     GDALDriver* memDriver =
@@ -95,93 +157,77 @@ static void rasterize_tile(std::ifstream& file,
     GDALRasterBand* band = ds->GetRasterBand(1);
     band->Fill(1.0);   // 1 = water
 
-    // --- Collect Level-1 polygons that overlap the tile --------------------
-    // Tile geographic extent (in degrees, [-180, 180] longitude convention).
-    const double tile_west  = (double)tile_lon;
-    const double tile_east  = (double)(tile_lon + 1);
-    const double tile_south = (double)tile_lat;
-    const double tile_north = (double)(tile_lat + 1);
+    // --- Collect Level-1 polygons via the spatial index --------------------
+    auto microdeg_to_lon = [](int32_t v) -> double {
+        double d = v * 1e-6;
+        return (d > 180.0) ? d - 360.0 : d;
+    };
 
     std::vector<OGRGeometryH> hgeoms;
     std::vector<OGRGeometry*> owned_geoms;  // for cleanup
 
-    // Clear eofbit (and any other error bits) before rewinding, so that
-    // seekg works correctly even if the previous call read to the end of file.
-    file.clear();
-    file.seekg(0, std::ios::beg);
-    while (file) {
-        GshhgHeader hdr{};
-        file.read(reinterpret_cast<char*>(&hdr), sizeof(hdr));
-        if (!file) break;
+    // Build a tile bounding-box polygon once for clipping.
+    // Clipping each polygon to the tile extent before rasterizing avoids
+    // passing huge continent-scale polygons (e.g. 1.18 M-point North America)
+    // to GDAL when only a small coastal fragment intersects the tile.
+    OGRLinearRing* bbox_ring = new OGRLinearRing();
+    bbox_ring->addPoint(tile_lon,     tile_lat);
+    bbox_ring->addPoint(tile_lon + 1, tile_lat);
+    bbox_ring->addPoint(tile_lon + 1, tile_lat + 1);
+    bbox_ring->addPoint(tile_lon,     tile_lat + 1);
+    bbox_ring->addPoint(tile_lon,     tile_lat);
+    OGRPolygon tile_bbox;
+    tile_bbox.addRingDirectly(bbox_ring);
 
-        // Byte-swap every field (big-endian on disk).
-        hdr.id        = be32(hdr.id);
-        hdr.n         = be32(hdr.n);
-        hdr.flag      = be32(hdr.flag);
-        hdr.west      = be32(hdr.west);
-        hdr.east      = be32(hdr.east);
-        hdr.south     = be32(hdr.south);
-        hdr.north     = be32(hdr.north);
-        hdr.area      = be32(hdr.area);
-        hdr.area_full = be32(hdr.area_full);
-        hdr.container = be32(hdr.container);
-        hdr.ancestor  = be32(hdr.ancestor);
+    const TileKey key{tile_lat, tile_lon};
+    auto idx_it = index_.find(key);
+    if (idx_it != index_.end()) {
+        for (const PolyRef& ref : idx_it->second) {
+            // Seek to the polygon's header.
+            file_.clear();
+            file_.seekg(ref.offset, std::ios::beg);
 
-        const int level = hdr.flag & 0xFF;
-        const int n     = hdr.n;
+            GshhgHeader hdr{};
+            file_.read(reinterpret_cast<char*>(&hdr), sizeof(hdr));
+            if (!file_) continue;
 
-        if (level != 1) {
-            // Skip polygon points and continue.
-            file.seekg(static_cast<std::streamoff>(sizeof(GshhgPoint)) * n,
-                       std::ios::cur);
-            continue;
+            const int n = ref.n;
+
+            // Read polygon points and build an OGRPolygon.
+            std::vector<GshhgPoint> pts(n);
+            file_.read(reinterpret_cast<char*>(pts.data()),
+                       static_cast<std::streamsize>(sizeof(GshhgPoint)) * n);
+            if (!file_) continue;
+
+            OGRLinearRing* ring = new OGRLinearRing();
+            ring->setNumPoints(n + 1);
+            for (int i = 0; i < n; ++i) {
+                double lon = microdeg_to_lon(be32(pts[i].x));
+                double lat = be32(pts[i].y) * 1e-6;
+                ring->setPoint(i, lon, lat);
+            }
+            // Close the ring.
+            ring->setPoint(n, ring->getX(0), ring->getY(0));
+
+            OGRPolygon* poly = new OGRPolygon();
+            poly->addRingDirectly(ring);
+
+            // Clip to tile extent.  Without this, continent-scale polygons
+            // (e.g. North America with 1.18 M points) force GDAL to check
+            // every edge even when no pixels in this tile are covered.
+            OGRGeometry* clipped = poly->Intersection(&tile_bbox);
+            OGRGeometryFactory::destroyGeometry(poly);
+            if (!clipped || clipped->IsEmpty()) {
+                if (clipped) OGRGeometryFactory::destroyGeometry(clipped);
+                continue;
+            }
+
+            hgeoms.push_back(OGRGeometry::ToHandle(clipped));
+            owned_geoms.push_back(clipped);
         }
-
-        // Convert bounding box from micro-degrees (0–360 convention) to degrees
-        // in [-180, 180].
-        auto microdeg_to_lon = [](int32_t v) -> double {
-            double d = v * 1e-6;
-            return (d > 180.0) ? d - 360.0 : d;
-        };
-        const double poly_west  = microdeg_to_lon(hdr.west);
-        const double poly_east  = microdeg_to_lon(hdr.east);
-        const double poly_south = hdr.south * 1e-6;
-        const double poly_north = hdr.north * 1e-6;
-
-        // Quick AABB overlap test.
-        bool overlaps = (poly_east  >= tile_west)  &&
-                        (poly_west  <= tile_east)   &&
-                        (poly_north >= tile_south)  &&
-                        (poly_south <= tile_north);
-
-        if (!overlaps) {
-            file.seekg(static_cast<std::streamoff>(sizeof(GshhgPoint)) * n,
-                       std::ios::cur);
-            continue;
-        }
-
-        // Read polygon points and build an OGRPolygon.
-        std::vector<GshhgPoint> pts(n);
-        file.read(reinterpret_cast<char*>(pts.data()),
-                  static_cast<std::streamsize>(sizeof(GshhgPoint)) * n);
-        if (!file) break;
-
-        OGRLinearRing* ring = new OGRLinearRing();
-        ring->setNumPoints(n + 1);
-        for (int i = 0; i < n; ++i) {
-            double lon = microdeg_to_lon(be32(pts[i].x));
-            double lat = be32(pts[i].y) * 1e-6;
-            ring->setPoint(i, lon, lat);
-        }
-        // Close the ring.
-        ring->setPoint(n, ring->getX(0), ring->getY(0));
-
-        OGRPolygon* poly = new OGRPolygon();
-        poly->addRingDirectly(ring);
-
-        hgeoms.push_back(OGRGeometry::ToHandle(poly));
-        owned_geoms.push_back(poly);
     }
+    // If key not in index_, the tile has no overlapping Level-1 polygons
+    // (pure ocean) — leave the raster all-water.
 
     // --- Rasterize: burn value 0 = land ------------------------------------
     if (!hgeoms.empty()) {
@@ -254,7 +300,7 @@ bool OceanMaskRasterizer::is_water(double lat, double lon)
     }
 
     std::vector<uint8_t> raster(kTilePixels * kTilePixels);
-    rasterize_tile(file_, tile_lat, tile_lon, raster);
+    rasterize_tile(tile_lat, tile_lon, raster);
     ++rasterize_count_;
 
     lru_list_.push_front(key);

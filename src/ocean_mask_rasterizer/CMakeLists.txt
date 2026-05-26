@@ -35,3 +35,11 @@ target_compile_definitions(test_ocean_origin_for_ray PRIVATE
 )
 
 add_test(NAME OceanOriginForRay COMMAND test_ocean_origin_for_ray)
+
+add_executable(test_gshhg_spatial_index tests/test_gshhg_spatial_index.cpp)
+target_link_libraries(test_gshhg_spatial_index PRIVATE ocean_mask_rasterizer)
+target_compile_definitions(test_gshhg_spatial_index PRIVATE
+    GSHHG_FULL_PATH="${CMAKE_SOURCE_DIR}/data/GSHHG/data/0-data/gshhs_f.b"
+)
+
+add_test(NAME GshhgSpatialIndex COMMAND test_gshhg_spatial_index)

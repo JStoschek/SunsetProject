@@ -28,6 +28,14 @@ struct GshhgPoint {
     int32_t y;  // latitude in micro-degrees
 };
 
+/// A compact reference to a GSHHG polygon: its byte offset in the file and
+/// the number of points (so the caller can seek past its point data without
+/// re-reading the header).
+struct PolyRef {
+    std::streamoff offset;  ///< byte offset of the GshhgHeader in the file
+    int            n;       ///< point count
+};
+
 class OceanMaskRasterizer {
 public:
     /// Opens a GSHHG binary file (e.g. gshhs_f.b) and holds it open for the
@@ -77,8 +85,14 @@ private:
         std::list<TileKey>::iterator lru_it;
     };
 
-    std::unordered_map<TileKey, CacheEntry, PairHash> cache_;
-    std::list<TileKey>                                 lru_list_;
+    /// Rasterize all Level-1 polygons that overlap the 1°×1° tile at
+    /// (tile_lat, tile_lon) into `raster` using the pre-built spatial index.
+    void rasterize_tile(int tile_lat, int tile_lon,
+                        std::vector<uint8_t>& raster);
+
+    std::unordered_map<TileKey, CacheEntry,            PairHash> cache_;
+    std::unordered_map<TileKey, std::vector<PolyRef>,  PairHash> index_;
+    std::list<TileKey>                                            lru_list_;
 
     // -------------------------------------------------------------------------
     std::ifstream file_;
