@@ -19,3 +19,11 @@ target_compile_definitions(test_is_water_rasterization PRIVATE
 )
 
 add_test(NAME IsWaterRasterization COMMAND test_is_water_rasterization)
+
+add_executable(test_lru_tile_cache tests/test_lru_tile_cache.cpp)
+target_link_libraries(test_lru_tile_cache PRIVATE ocean_mask_rasterizer)
+target_compile_definitions(test_lru_tile_cache PRIVATE
+    GSHHG_FULL_PATH="${CMAKE_SOURCE_DIR}/data/GSHHG/data/0-data/gshhs_f.b"
+)
+
+add_test(NAME LruTileCache COMMAND test_lru_tile_cache)

@@ -210,21 +210,60 @@ static void rasterize_tile(std::ifstream& file,
 }
 
 // ---------------------------------------------------------------------------
+// Pack a kTilePixels×kTilePixels byte raster (1=water, 0=land) into a
+// compact 1-bit-per-pixel array of uint64_t words.
+// ---------------------------------------------------------------------------
+static std::vector<uint64_t> pack_raster(const std::vector<uint8_t>& raster)
+{
+    const int total = kTilePixels * kTilePixels;
+    std::vector<uint64_t> bits((total + 63) / 64, 0ULL);
+    for (int i = 0; i < total; ++i) {
+        if (raster[i] != 0)
+            bits[i / 64] |= (uint64_t(1) << (i % 64));
+    }
+    return bits;
+}
+
+// ---------------------------------------------------------------------------
 bool OceanMaskRasterizer::is_water(double lat, double lon)
 {
     const int tile_lat = (int)std::floor(lat);
     const int tile_lon = (int)std::floor(lon);
-
-    std::vector<uint8_t> raster(kTilePixels * kTilePixels);
-    rasterize_tile(file_, tile_lat, tile_lon, raster);
+    const TileKey key{tile_lat, tile_lon};
 
     // Pixel coordinates within the tile (clamp to valid range).
     int col = (int)((lon - tile_lon) * kTilePixels);
     int row = (int)((tile_lat + 1.0 - lat) * kTilePixels);
     col = std::max(0, std::min(col, kTilePixels - 1));
     row = std::max(0, std::min(row, kTilePixels - 1));
+    const int idx = row * kTilePixels + col;
 
-    return raster[row * kTilePixels + col] != 0;
+    // --- Cache lookup ---
+    auto it = cache_.find(key);
+    if (it != cache_.end()) {
+        // Cache hit: promote to most-recently-used.
+        lru_list_.splice(lru_list_.begin(), lru_list_, it->second.lru_it);
+        const auto& bits = it->second.bits;
+        return (bits[idx / 64] >> (idx % 64)) & 1ULL;
+    }
+
+    // --- Cache miss: evict LRU if at capacity, then rasterize and insert ---
+    if ((int)cache_.size() >= lru_capacity_) {
+        cache_.erase(lru_list_.back());
+        lru_list_.pop_back();
+    }
+
+    std::vector<uint8_t> raster(kTilePixels * kTilePixels);
+    rasterize_tile(file_, tile_lat, tile_lon, raster);
+    ++rasterize_count_;
+
+    lru_list_.push_front(key);
+    auto& entry  = cache_[key];
+    entry.bits   = pack_raster(raster);
+    entry.lru_it = lru_list_.begin();
+
+    const auto& bits = entry.bits;
+    return (bits[idx / 64] >> (idx % 64)) & 1ULL;
 }
 
 std::pair<double, double>
