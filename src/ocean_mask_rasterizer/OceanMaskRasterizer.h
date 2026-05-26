@@ -47,8 +47,9 @@ public:
     bool is_water(double lat, double lon);
 
     /// Returns the ocean-origin point for a ray cast at azimuth_deg from
-    /// (lat, lon): 200 km west of the first land→water crossing along the ray.
-    /// Stub: returns {lat, lon} unchanged.
+    /// (lat, lon): marches along azimuth_deg until hitting land (the coastline
+    /// crossing), then returns a point 200 km back along the reverse azimuth
+    /// from that crossing.  (lat, lon) must already be in the ocean.
     std::pair<double, double> ocean_origin_for_ray(double azimuth_deg,
                                                     double lat, double lon);
 

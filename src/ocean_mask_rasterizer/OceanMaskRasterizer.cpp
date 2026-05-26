@@ -266,9 +266,57 @@ bool OceanMaskRasterizer::is_water(double lat, double lon)
     return (bits[idx / 64] >> (idx % 64)) & 1ULL;
 }
 
+// ---------------------------------------------------------------------------
+// Spherical-Earth helper: destination point given start (lat, lon in degrees),
+// bearing (degrees clockwise from north), and distance (km).
+// Uses the haversine forward formula with R = 6371 km.
+// ---------------------------------------------------------------------------
+static std::pair<double,double> geo_destination(double lat, double lon,
+                                                  double bearing_deg, double dist_km)
+{
+    const double R     = 6371.0;
+    const double d     = dist_km / R;
+    const double lat1  = lat         * M_PI / 180.0;
+    const double lon1  = lon         * M_PI / 180.0;
+    const double theta = bearing_deg * M_PI / 180.0;
+
+    const double lat2 = std::asin(std::sin(lat1) * std::cos(d)
+                                  + std::cos(lat1) * std::sin(d) * std::cos(theta));
+    const double lon2 = lon1 + std::atan2(std::sin(theta) * std::sin(d) * std::cos(lat1),
+                                           std::cos(d) - std::sin(lat1) * std::sin(lat2));
+
+    return {lat2 * 180.0 / M_PI, lon2 * 180.0 / M_PI};
+}
+
 std::pair<double, double>
-OceanMaskRasterizer::ocean_origin_for_ray(double /*azimuth_deg*/,
+OceanMaskRasterizer::ocean_origin_for_ray(double azimuth_deg,
                                            double lat, double lon)
 {
-    return {lat, lon};
+    // March along azimuth_deg (toward the coast) in 1 km steps until hitting
+    // land.  The first land point is the coastline crossing.
+    const double step_km   = 1.0;
+    const double max_km    = 100.0;
+    const double offset_km = 200.0;
+
+    double crossing_lat = lat;
+    double crossing_lon = lon;
+    bool   found        = false;
+
+    for (double dist = step_km; dist <= max_km; dist += step_km) {
+        auto [pt_lat, pt_lon] = geo_destination(lat, lon, azimuth_deg, dist);
+        if (!is_water(pt_lat, pt_lon)) {
+            crossing_lat = pt_lat;
+            crossing_lon = pt_lon;
+            found = true;
+            break;
+        }
+    }
+
+    // If no coastline is found within max_km, return the input unchanged.
+    if (!found)
+        return {lat, lon};
+
+    // Return a point 200 km back along the reverse azimuth from the crossing.
+    const double back_az = std::fmod(azimuth_deg + 180.0, 360.0);
+    return geo_destination(crossing_lat, crossing_lon, back_az, offset_km);
 }

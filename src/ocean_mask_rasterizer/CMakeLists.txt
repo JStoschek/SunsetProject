@@ -27,3 +27,11 @@ target_compile_definitions(test_lru_tile_cache PRIVATE
 )
 
 add_test(NAME LruTileCache COMMAND test_lru_tile_cache)
+
+add_executable(test_ocean_origin_for_ray tests/test_ocean_origin_for_ray.cpp)
+target_link_libraries(test_ocean_origin_for_ray PRIVATE ocean_mask_rasterizer)
+target_compile_definitions(test_ocean_origin_for_ray PRIVATE
+    GSHHG_FULL_PATH="${CMAKE_SOURCE_DIR}/data/GSHHG/data/0-data/gshhs_f.b"
+)
+
+add_test(NAME OceanOriginForRay COMMAND test_ocean_origin_for_ray)
