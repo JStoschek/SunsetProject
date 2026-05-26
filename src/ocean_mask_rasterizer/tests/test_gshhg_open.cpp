@@ -10,13 +10,7 @@ int main() {
         (void)omr;
     }
 
-    // Stub: is_water always returns false
-    {
-        OceanMaskRasterizer omr(GSHHG_FULL_PATH);
-        assert(omr.is_water(37.5, -122.3) == false);
-    }
-
-    // Stub: ocean_origin_for_ray returns {lat, lon} unchanged
+    // ocean_origin_for_ray is still a stub: returns {lat, lon} unchanged.
     {
         OceanMaskRasterizer omr(GSHHG_FULL_PATH);
         auto [lat, lon] = omr.ocean_origin_for_ray(270.0, 37.5, -122.3);
