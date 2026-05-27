@@ -175,8 +175,8 @@ void HorizonSweepEngine::compute_slice(double azimuth_deg, AzimuthSlice& out) {
                 const double rms = profile_[idx];
 
                 const double lon_pix = min_lon_ + col * cell_deg_;
-                float h = dem_.get_elevation(lat_pix, lon_pix);
-                if (std::isnan(h)) h = 0.0f;
+                const float h = dem_.get_elevation(lat_pix, lon_pix);
+                if (std::isnan(h)) continue;  // no data: no observer here, stays false
                 const double d_pix = offset + dist;
                 const double h_adj = h - d_pix * d_pix * c;
                 const bool visible = (h_adj + eye) / d_pix >= rms;

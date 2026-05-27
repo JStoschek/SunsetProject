@@ -25,3 +25,10 @@ target_compile_definitions(test_rotated_frame_visibility PRIVATE
     PIPELINE_CONF_PATH="${PIPELINE_CONF}"
 )
 add_test(NAME RotatedFrameVisibility COMMAND test_rotated_frame_visibility)
+
+add_executable(test_nan_no_data tests/test_nan_no_data.cpp)
+target_link_libraries(test_nan_no_data PRIVATE horizon_sweep_engine)
+target_compile_definitions(test_nan_no_data PRIVATE
+    PIPELINE_CONF_PATH="${PIPELINE_CONF}"
+)
+add_test(NAME NaNNoData COMMAND test_nan_no_data)
