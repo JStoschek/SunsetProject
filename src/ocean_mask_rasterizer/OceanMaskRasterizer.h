@@ -36,6 +36,16 @@ struct PolyRef {
     int            n;       ///< point count
 };
 
+/// Result of OceanMaskRasterizer::ocean_origin_for_ray.
+/// Contains both the 200 km-offset ocean origin point and the coastline
+/// crossing where is_water first returned false during the march.
+struct OceanOriginResult {
+    double origin_lat;  ///< latitude of the ocean origin (200 km offset point)
+    double origin_lon;  ///< longitude of the ocean origin
+    double coast_lat;   ///< latitude of the coastline crossing (first land pixel)
+    double coast_lon;   ///< longitude of the coastline crossing
+};
+
 class OceanMaskRasterizer {
 public:
     /// Opens a GSHHG binary file (e.g. gshhs_f.b) and holds it open for the
@@ -54,12 +64,12 @@ public:
     /// GSHHG on a cache miss.
     bool is_water(double lat, double lon);
 
-    /// Returns the ocean-origin point for a ray cast at azimuth_deg from
-    /// (lat, lon): marches along azimuth_deg until hitting land (the coastline
-    /// crossing), then returns a point 200 km back along the reverse azimuth
-    /// from that crossing.  (lat, lon) must already be in the ocean.
-    std::pair<double, double> ocean_origin_for_ray(double azimuth_deg,
-                                                    double lat, double lon);
+    /// Marches along azimuth_deg from (lat, lon) until hitting land (the
+    /// coastline crossing), then returns both the crossing point and a point
+    /// 200 km back along the reverse azimuth from that crossing.
+    /// (lat, lon) must already be in the ocean.
+    OceanOriginResult ocean_origin_for_ray(double azimuth_deg,
+                                            double lat, double lon);
 
     /// Number of times a tile was rasterized (i.e. a cache miss occurred).
     /// Useful in tests to verify that cache hits do not trigger re-rasterization.

@@ -334,7 +334,7 @@ static std::pair<double,double> geo_destination(double lat, double lon,
     return {lat2 * 180.0 / M_PI, lon2 * 180.0 / M_PI};
 }
 
-std::pair<double, double>
+OceanOriginResult
 OceanMaskRasterizer::ocean_origin_for_ray(double azimuth_deg,
                                            double lat, double lon)
 {
@@ -358,11 +358,16 @@ OceanMaskRasterizer::ocean_origin_for_ray(double azimuth_deg,
         }
     }
 
-    // If no coastline is found within max_km, return the input unchanged.
+    // If no coastline is found within max_km, return the input as both origin
+    // and coast (degenerate case — caller supplied an open-ocean point far from
+    // any coast).
     if (!found)
-        return {lat, lon};
+        return {lat, lon, lat, lon};
 
-    // Return a point 200 km back along the reverse azimuth from the crossing.
+    // Origin: 200 km back along the reverse azimuth from the crossing.
     const double back_az = std::fmod(azimuth_deg + 180.0, 360.0);
-    return geo_destination(crossing_lat, crossing_lon, back_az, offset_km);
+    auto [origin_lat, origin_lon] =
+        geo_destination(crossing_lat, crossing_lon, back_az, offset_km);
+
+    return {origin_lat, origin_lon, crossing_lat, crossing_lon};
 }
