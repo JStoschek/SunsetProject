@@ -106,6 +106,14 @@ private:
     std::unordered_map<TileKey, std::vector<PolyRef>,  PairHash> index_;
     std::list<TileKey>                                            lru_list_;
 
+    // Last-tile fast path: avoids a hash lookup when consecutive is_water()
+    // calls fall in the same 1°×1° tile (common during coast marching).
+    TileKey         last_key_{INT_MAX, INT_MAX};
+    const uint64_t* last_bits_ = nullptr;  // points into cache_[last_key_].bits
+
+    // Reused scratch buffer for rasterize_tile(); avoids a 116 MB alloc per miss.
+    std::vector<uint8_t> scratch_raster_;
+
     // -------------------------------------------------------------------------
     std::ifstream file_;
     int           lru_capacity_;

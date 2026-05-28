@@ -124,6 +124,8 @@ OceanMaskRasterizer::OceanMaskRasterizer(const std::string& gshhg_full_path,
 
     // Clear stream state so is_water() can seek freely.
     file_.clear();
+
+    scratch_raster_.resize(static_cast<std::size_t>(kTilePixels) * kTilePixels);
 }
 
 // ---------------------------------------------------------------------------
@@ -284,32 +286,39 @@ bool OceanMaskRasterizer::is_water(double lat, double lon)
     row = std::max(0, std::min(row, kTilePixels - 1));
     const int idx = row * kTilePixels + col;
 
+    // --- Fast path: same tile as last call (common during coast marching) ---
+    if (last_bits_ && key == last_key_)
+        return (last_bits_[idx / 64] >> (idx % 64)) & 1ULL;
+
     // --- Cache lookup ---
     auto it = cache_.find(key);
     if (it != cache_.end()) {
         // Cache hit: promote to most-recently-used.
         lru_list_.splice(lru_list_.begin(), lru_list_, it->second.lru_it);
-        const auto& bits = it->second.bits;
-        return (bits[idx / 64] >> (idx % 64)) & 1ULL;
+        last_key_  = key;
+        last_bits_ = it->second.bits.data();
+        return (last_bits_[idx / 64] >> (idx % 64)) & 1ULL;
     }
 
     // --- Cache miss: evict LRU if at capacity, then rasterize and insert ---
     if ((int)cache_.size() >= lru_capacity_) {
+        if (lru_list_.back() == last_key_)
+            last_bits_ = nullptr;
         cache_.erase(lru_list_.back());
         lru_list_.pop_back();
     }
 
-    std::vector<uint8_t> raster(kTilePixels * kTilePixels);
-    rasterize_tile(tile_lat, tile_lon, raster);
+    rasterize_tile(tile_lat, tile_lon, scratch_raster_);
     ++rasterize_count_;
 
     lru_list_.push_front(key);
     auto& entry  = cache_[key];
-    entry.bits   = pack_raster(raster);
+    entry.bits   = pack_raster(scratch_raster_);
     entry.lru_it = lru_list_.begin();
 
-    const auto& bits = entry.bits;
-    return (bits[idx / 64] >> (idx % 64)) & 1ULL;
+    last_key_  = key;
+    last_bits_ = entry.bits.data();
+    return (last_bits_[idx / 64] >> (idx % 64)) & 1ULL;
 }
 
 // ---------------------------------------------------------------------------
