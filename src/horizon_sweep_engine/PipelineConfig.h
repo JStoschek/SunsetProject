@@ -25,6 +25,9 @@ struct PipelineConfig {
     double azimuth_max_deg;            ///< inclusive upper sunset azimuth
     double azimuth_step_deg;           ///< azimuth step between slices
 
+    // ── Azimuth range pipeline ──────────────────────────────────────────
+    double strip_height_deg;           ///< latitude height of each processing strip
+
     // ── Coast finding ───────────────────────────────────────────────────
     double coast_march_step_km;        ///< eastward is_water march step
     double coast_march_max_km;         ///< give-up distance for the coast search

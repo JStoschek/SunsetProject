@@ -71,6 +71,7 @@ PipelineConfig PipelineConfig::load(const std::string& path) {
     c.azimuth_min_deg            = require_double(kv, "azimuth_min_deg");
     c.azimuth_max_deg            = require_double(kv, "azimuth_max_deg");
     c.azimuth_step_deg           = require_double(kv, "azimuth_step_deg");
+    c.strip_height_deg           = require_double(kv, "strip_height_deg");
     c.coast_march_step_km        = require_double(kv, "coast_march_step_km");
     c.coast_march_max_km         = require_double(kv, "coast_march_max_km");
     c.dem_lru_capacity           = require_int(kv, "dem_lru_capacity");
