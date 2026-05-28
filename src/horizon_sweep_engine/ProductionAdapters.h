@@ -20,11 +20,15 @@ private:
 // accepts the same convention.  Only the coastline crossing fields are used
 // by the engine; the 200 km origin fields are ignored.
 struct OceanAdapter : CoastlineFinder {
-    explicit OceanAdapter(OceanMaskRasterizer& omr) : omr_(omr) {}
+    OceanAdapter(OceanMaskRasterizer& omr, const PipelineConfig& config)
+        : omr_(omr), config_(config) {}
     OceanOriginResult ocean_origin_for_ray(double bearing,
                                            double lat, double lon) override {
-        return omr_.ocean_origin_for_ray(bearing, lat, lon);
+        return omr_.ocean_origin_for_ray(bearing, lat, lon,
+                                         config_.coast_march_step_km,
+                                         config_.coast_march_max_km);
     }
 private:
     OceanMaskRasterizer& omr_;
+    const PipelineConfig& config_;
 };

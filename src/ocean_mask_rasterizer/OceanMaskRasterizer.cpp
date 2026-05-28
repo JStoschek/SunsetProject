@@ -336,12 +336,10 @@ static std::pair<double,double> geo_destination(double lat, double lon,
 
 OceanOriginResult
 OceanMaskRasterizer::ocean_origin_for_ray(double azimuth_deg,
-                                           double lat, double lon)
+                                           double lat, double lon,
+                                           double step_km, double max_km)
 {
-    // March along azimuth_deg (toward the coast) in 1 km steps until hitting
-    // land.  The first land point is the coastline crossing.
-    const double step_km   = 1.0;
-    const double max_km    = 100.0;
+    // March along azimuth_deg (toward the coast) until hitting land.
     const double offset_km = 200.0;
 
     double crossing_lat = lat;

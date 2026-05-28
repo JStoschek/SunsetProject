@@ -31,6 +31,14 @@ int require_int(const std::map<std::string, std::string>& kv,
     return std::stoi(it->second);
 }
 
+std::string require_string(const std::map<std::string, std::string>& kv,
+                           const std::string& key) {
+    const auto it = kv.find(key);
+    if (it == kv.end())
+        throw std::runtime_error("PipelineConfig: missing required key '" + key + "'");
+    return it->second;
+}
+
 }  // namespace
 
 PipelineConfig PipelineConfig::load(const std::string& path) {
@@ -67,5 +75,7 @@ PipelineConfig PipelineConfig::load(const std::string& path) {
     c.coast_march_max_km         = require_double(kv, "coast_march_max_km");
     c.dem_lru_capacity           = require_int(kv, "dem_lru_capacity");
     c.ocean_lru_capacity         = require_int(kv, "ocean_lru_capacity");
+    c.dem_dir                    = require_string(kv, "dem_dir");
+    c.gshhg_path                 = require_string(kv, "gshhg_path");
     return c;
 }

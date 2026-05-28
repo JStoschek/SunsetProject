@@ -69,7 +69,9 @@ public:
     /// 200 km back along the reverse azimuth from that crossing.
     /// (lat, lon) must already be in the ocean.
     OceanOriginResult ocean_origin_for_ray(double azimuth_deg,
-                                            double lat, double lon);
+                                            double lat, double lon,
+                                            double step_km  = 1.0,
+                                            double max_km   = 100.0);
 
     /// Number of times a tile was rasterized (i.e. a cache miss occurred).
     /// Useful in tests to verify that cache hits do not trigger re-rasterization.

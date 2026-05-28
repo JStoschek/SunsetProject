@@ -33,6 +33,10 @@ struct PipelineConfig {
     int    dem_lru_capacity;           ///< DEM tiles held resident
     int    ocean_lru_capacity;         ///< ocean-mask tiles held resident
 
+    // ── Data paths ───────────────────────────────────────────────────
+    std::string dem_dir;               ///< directory containing USGS GeoTIFF tiles
+    std::string gshhg_path;            ///< path to gshhs_f.b full-resolution GSHHG file
+
     /// Parse a pipeline config file. Lines are `key = value`; `#` begins a
     /// comment; blank lines are ignored. Throws std::runtime_error if the file
     /// cannot be opened or a required key is missing.
