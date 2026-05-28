@@ -86,10 +86,14 @@ void HorizonSweepEngine::compute_slice(double azimuth_deg, AzimuthSlice& out) {
     const long j_min = std::lround(perp_min / s) - 1;
     const long j_max = std::lround(perp_max / s) + 1;
 
-    // Reserve profile_ capacity once for the longest possible ray in this
-    // slice. After the first call this is a no-op (capacity is sticky), so
-    // every subsequent push_back in the Phase-1 march is a plain write.
-    profile_.reserve(static_cast<std::size_t>(along_max / step) + 16);
+    // Pre-size profile_ once for the longest possible ray in this slice, then
+    // write by index in Phase 1 (see below). After the first call this resize
+    // is a no-op (capacity is sticky and the size matches), so we skip the
+    // push_back/emplace_back/__construct_one_at_end call chain entirely and
+    // let the compiler emit straight indexed stores.
+    const std::size_t max_profile_n =
+        static_cast<std::size_t>(along_max / step) + 16;
+    if (profile_.size() < max_profile_n) profile_.resize(max_profile_n);
 
     // |A*cos b| is the per-column change in perp; when it is ~0 the azimuth is
     // cardinal and a whole output row maps to one ray (perp is column-independent).
@@ -116,7 +120,12 @@ void HorizonSweepEngine::compute_slice(double azimuth_deg, AzimuthSlice& out) {
         // each step (bare ground only). Terminate by along-ray distance so the
         // profile spans every in-box pixel on this ray regardless of where the
         // tilted ray enters or leaves the latitude band.
-        profile_.clear();
+        //
+        // profile_ is pre-sized to max_profile_n above; we write by index into
+        // its raw buffer to avoid push_back's call chain. `n` tracks the live
+        // length; Phase 2 uses it instead of profile_.size().
+        float* const prof = profile_.data();
+        int n = 0;
         double lat = cross.coast_lat;
         double lon = cross.coast_lon;
         double d   = offset;
@@ -127,7 +136,7 @@ void HorizonSweepEngine::compute_slice(double azimuth_deg, AzimuthSlice& out) {
             if (std::isnan(h)) h = 0.0f;
             const double h_adj = h - d * d * c;
             running_max = std::max(running_max, h_adj / d);
-            profile_.push_back(static_cast<float>(running_max));
+            prof[n++] = static_cast<float>(running_max);
 
             const double dnorth_m = step * cos_b;
             const double deast_m  = step * sin_b;
@@ -136,8 +145,8 @@ void HorizonSweepEngine::compute_slice(double azimuth_deg, AzimuthSlice& out) {
             d     += step;
             along += step;
         }
-        if (profile_.empty()) continue;
-        const int last = static_cast<int>(profile_.size()) - 1;
+        if (n == 0) continue;
+        const int last = n - 1;
 
         // ── Phase 2: observers ──────────────────────────────────────────
         // For every pixel on this ray (a contiguous column interval per row,
@@ -177,7 +186,7 @@ void HorizonSweepEngine::compute_slice(double azimuth_deg, AzimuthSlice& out) {
                 int idx = static_cast<int>(std::lround(dist / step));
                 if (idx < 0) idx = 0;
                 if (idx > last) idx = last;
-                const double rms = profile_[idx];
+                const double rms = prof[idx];
 
                 const double lon_pix = min_lon_ + col * cell_deg_;
                 const float h = dem_.get_elevation(lat_pix, lon_pix);
