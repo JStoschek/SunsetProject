@@ -86,6 +86,11 @@ void HorizonSweepEngine::compute_slice(double azimuth_deg, AzimuthSlice& out) {
     const long j_min = std::lround(perp_min / s) - 1;
     const long j_max = std::lround(perp_max / s) + 1;
 
+    // Reserve profile_ capacity once for the longest possible ray in this
+    // slice. After the first call this is a no-op (capacity is sticky), so
+    // every subsequent push_back in the Phase-1 march is a plain write.
+    profile_.reserve(static_cast<std::size_t>(along_max / step) + 16);
+
     // |A*cos b| is the per-column change in perp; when it is ~0 the azimuth is
     // cardinal and a whole output row maps to one ray (perp is column-independent).
     const double denom = A * cos_b;

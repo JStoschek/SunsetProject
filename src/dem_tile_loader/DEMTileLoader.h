@@ -1,4 +1,5 @@
 #pragma once
+#include <climits>
 #include <list>
 #include <string>
 #include <unordered_map>
@@ -38,6 +39,12 @@ private:
     std::unordered_map<TileKey, CacheEntry, PairHash>     cache_;
     std::list<TileKey>                                     lru_list_;
     int lru_capacity_;
+
+    // Last-tile fast path: skips both index_.find and cache_.find when
+    // consecutive get_elevation calls land in the same DEM tile (the common
+    // case during a horizon-sweep march).
+    TileKey         last_key_{INT_MAX, INT_MAX};
+    const TileData* last_tile_ = nullptr;  // null after eviction or first call
 
     const TileData& get_or_load(const TileKey& key, const std::string& path);
 };
