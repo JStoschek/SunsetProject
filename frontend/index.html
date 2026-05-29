@@ -125,7 +125,11 @@
 
       let cached = rawCache.get(tileUrl);
       if (!cached) {
-        const r = await fetch(tileUrl);
+        // Revalidate against the tile server (conditional GET): a cheap 304 when
+        // the tile is unchanged, but fresh bytes after the pyramid is rebuilt.
+        // Without this the browser's heuristic HTTP cache keeps serving stale
+        // tiles, so a regenerated pyramid renders all-black until the cache ages out.
+        const r = await fetch(tileUrl, { cache: 'no-cache' });
         if (!r.ok) return { data: EMPTY_TILE };
 
         const buf = await r.arrayBuffer();
