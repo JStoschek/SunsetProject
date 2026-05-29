@@ -355,29 +355,11 @@ OceanMaskRasterizer::ocean_origin_for_ray(double azimuth_deg,
     double crossing_lon = lon;
     bool   found        = false;
 
-    // Incremental loxodrome stepping: precompute the per-km lat/lon deltas
-    // once, then update by addition each step. For marches up to ~100 km this
-    // matches the great-circle forward formula to well within is_water's tile
-    // resolution (~10 m at 1/10800° pixels), while replacing ~3 trig calls per
-    // step with one cos() per step. Profile showed geo_destination was ~10%
-    // inclusive at the per-km calling rate.
-    constexpr double kKmPerDegLat = 111.19492664455873;  // 6371 * pi / 180
-    const double az_rad = azimuth_deg * M_PI / 180.0;
-    const double sin_az = std::sin(az_rad);
-    const double cos_az = std::cos(az_rad);
-    const double dlat_per_km = cos_az / kKmPerDegLat;
-
-    double cur_lat = lat;
-    double cur_lon = lon;
     for (double dist = step_km; dist <= max_km; dist += step_km) {
-        // Step using the local cos(lat) so dlon stays accurate as we drift N/S.
-        const double cos_lat = std::cos(cur_lat * M_PI / 180.0);
-        cur_lat += dlat_per_km * step_km;
-        cur_lon += (sin_az / (cos_lat * kKmPerDegLat)) * step_km;
-
-        if (!is_water(cur_lat, cur_lon)) {
-            crossing_lat = cur_lat;
-            crossing_lon = cur_lon;
+        auto [pt_lat, pt_lon] = geo_destination(lat, lon, azimuth_deg, dist);
+        if (!is_water(pt_lat, pt_lon)) {
+            crossing_lat = pt_lat;
+            crossing_lon = pt_lon;
             found = true;
             break;
         }
