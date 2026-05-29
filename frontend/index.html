@@ -6,6 +6,11 @@
   <title>Sunset Project</title>
   <link href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css" rel="stylesheet" />
   <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+  <!-- Version-pinned SunCalc CDN (mirrors the pinned-MapLibre rationale); attaches global SunCalc. -->
+  <script src="https://unpkg.com/suncalc@1.9.0/suncalc.js"></script>
+  <!-- Pure modules (slices 01 & 02); UMD attaches sunsetAzimuth / encodeAzimuth globals. -->
+  <script src="sunset_azimuth.js"></script>
+  <script src="encode_azimuth.js"></script>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     html, body { width: 100%; height: 100%; }
@@ -22,15 +27,60 @@
       border-radius: 3px;
       pointer-events: none;
     }
+    #date-controls {
+      position: fixed;
+      top: 10px;
+      left: 10px;
+      background: rgba(0, 0, 0, 0.6);
+      color: #fff;
+      font-family: monospace;
+      font-size: 13px;
+      padding: 6px 8px;
+      border-radius: 3px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    #date-controls input[type="date"] {
+      font-family: monospace;
+      font-size: 13px;
+    }
   </style>
 </head>
 <body>
   <div id="map"></div>
+  <div id="date-controls">
+    <label for="date-input">Sunset date</label>
+    <input type="date" id="date-input" />
+  </div>
   <div id="cursor-readout">—</div>
   <script>
-    // Encode 270° into channel space: (az - 200) / 160 * 255, rounded.
-    // R channel = encoded min_az, G channel = encoded max_az (ADR-0003).
-    const ENCODED_AZ = Math.round((270 - 200) / 160 * 255); // 112
+    // --- Date helpers ------------------------------------------------------
+    // Local "today" as YYYY-MM-DD, derived from local calendar components.
+    // Never toISOString(): that yields the UTC date and can be a day ahead for
+    // evening West Coast users.
+    function localTodayValue() {
+      const now = new Date();
+      const y = now.getFullYear();
+      const m = String(now.getMonth() + 1).padStart(2, '0');
+      const d = String(now.getDate()).padStart(2, '0');
+      return `${y}-${m}-${d}`;
+    }
+
+    // Parse a YYYY-MM-DD input value into integer components (no Date/timezone
+    // round-trip), compute the Sunset Azimuth (slice 01) and encode it (slice 02).
+    function encodedAzForDate(dateValue, lat) {
+      const [y, m, d] = dateValue.split('-').map(Number);
+      const compassAz = sunsetAzimuth(y, m, d, lat);
+      return encodeAzimuth(compassAz);
+    }
+
+    // Default azimuth byte, computed synchronously from the default date and the
+    // map's initial center latitude, so the very first tile colorize is correct
+    // before any event fires.
+    const INITIAL_CENTER = [-122.5, 37.85];
+    const DEFAULT_DATE = localTodayValue();
+    let currentEncodedAz = encodedAzForDate(DEFAULT_DATE, INITIAL_CENTER[1]);
 
     // Transparent 1×1 PNG returned for tiles that do not exist in the pyramid
     // (ocean tiles skipped during generation, outside data bounds, etc.)
@@ -42,29 +92,64 @@
       return arr.buffer;
     })();
 
-    // Custom protocol: fetch raw visibility tiles, decode R/G channel encoding,
-    // and emit white (visible) / black (not visible) / transparent (no-data).
-    maplibregl.addProtocol('visibility', async (params) => {
-      const tileUrl = params.url.replace('visibility://', '');
-      const r = await fetch(tileUrl);
-      if (!r.ok) return { data: EMPTY_TILE };
+    // In-memory cache: tile URL -> { width, height, raw: Uint8Array (R, G, A per pixel) }
+    const rawCache = new Map();
 
-      const buf = await r.arrayBuffer();
-      const bitmap = await createImageBitmap(new Blob([buf]));
-      const canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
-      const ctx = canvas.getContext('2d');
-      ctx.drawImage(bitmap, 0, 0);
-      const id = ctx.getImageData(0, 0, canvas.width, canvas.height);
-      const d = id.data;
-      for (let i = 0; i < d.length; i += 4) {
-        if (d[i + 3] === 0) continue; // alpha=0: ocean / DEM no-data
-        if (d[i] <= ENCODED_AZ && d[i + 1] >= ENCODED_AZ) {
-          d[i] = 255; d[i + 1] = 255; d[i + 2] = 255; d[i + 3] = 255;
+    // Pure threshold step: map raw R/G/A channels + encoded azimuth byte to display RGBA.
+    // No network access; can be re-run against a new encodedAz without re-fetching.
+    function applyThreshold(raw, width, height, encodedAz) {
+      const out = new Uint8ClampedArray(width * height * 4);
+      for (let i = 0; i < width * height; i++) {
+        const r = raw[i * 3];
+        const g = raw[i * 3 + 1];
+        const a = raw[i * 3 + 2];
+        const j = i * 4;
+        if (a === 0) { // ocean / DEM no-data: leave transparent
+          continue;
+        } else if (r <= encodedAz && g >= encodedAz) {
+          out[j] = 255; out[j + 1] = 255; out[j + 2] = 255; out[j + 3] = 255;
         } else {
-          d[i] = 0; d[i + 1] = 0; d[i + 2] = 0; d[i + 3] = 255;
+          out[j + 3] = 255; // black (R/G/B default to 0)
         }
       }
-      ctx.putImageData(id, 0, 0);
+      return out;
+    }
+
+    // Custom protocol: fetch raw visibility tiles, cache R/G/A channels on first fetch,
+    // then apply the threshold step to emit white / black / transparent per pixel.
+    maplibregl.addProtocol('visibility', async (params) => {
+      // Strip the recolor cache-bust query (?v=N): it forces MapLibre to treat the
+      // tile as new and re-run this handler, but the underlying fetch URL and the
+      // rawCache key stay stable so a re-colorize never re-fetches.
+      const tileUrl = params.url.replace('visibility://', '').split('?')[0];
+
+      let cached = rawCache.get(tileUrl);
+      if (!cached) {
+        const r = await fetch(tileUrl);
+        if (!r.ok) return { data: EMPTY_TILE };
+
+        const buf = await r.arrayBuffer();
+        const bitmap = await createImageBitmap(new Blob([buf]));
+        const canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(bitmap, 0, 0);
+        const src = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+
+        const raw = new Uint8Array(bitmap.width * bitmap.height * 3);
+        for (let i = 0; i < bitmap.width * bitmap.height; i++) {
+          raw[i * 3]     = src[i * 4];     // R (encoded min_az)
+          raw[i * 3 + 1] = src[i * 4 + 1]; // G (encoded max_az)
+          raw[i * 3 + 2] = src[i * 4 + 3]; // A (255 = land, 0 = ocean/no-data)
+        }
+        cached = { width: bitmap.width, height: bitmap.height, raw };
+        rawCache.set(tileUrl, cached);
+      }
+
+      const { width, height, raw } = cached;
+      const rgba = applyThreshold(raw, width, height, currentEncodedAz);
+      const canvas = new OffscreenCanvas(width, height);
+      const ctx = canvas.getContext('2d');
+      ctx.putImageData(new ImageData(rgba, width, height), 0, 0);
       const blob = await canvas.convertToBlob();
       return { data: await blob.arrayBuffer() };
     });
@@ -104,9 +189,40 @@
           },
         ],
       },
-      center: [-122.5, 37.85],
+      center: INITIAL_CENTER,
       zoom: 11,
     });
+
+    // --- Recolorization Controller ----------------------------------------
+    // Owns the current encoded azimuth. applyAzimuth(encoded) re-thresholds the
+    // already-cached raw channels by forcing MapLibre to re-run the visibility
+    // protocol, issuing no network request. Skips when the byte is unchanged.
+    let recolorVersion = 0;
+    function applyAzimuth(encoded) {
+      if (encoded === currentEncodedAz) return; // no change → no rework, no fetch
+      currentEncodedAz = encoded;
+      const source = map.getSource('visibility');
+      if (!source) return;
+      // Cache-bust the tile template so MapLibre invalidates its rendered-tile
+      // cache and re-runs the protocol; the protocol strips ?v and reads raw
+      // channels from rawCache, so no tile is re-fetched.
+      recolorVersion++;
+      source.setTiles([`visibility://tiles/{z}/{x}/{y}.png?v=${recolorVersion}`]);
+    }
+
+    // Recompute the Sunset Azimuth from the current date input and map center.
+    function recolorizeFromInputs() {
+      applyAzimuth(encodedAzForDate(dateInput.value, map.getCenter().lat));
+    }
+
+    // --- Date input --------------------------------------------------------
+    const dateInput = document.getElementById('date-input');
+    dateInput.value = DEFAULT_DATE; // local today; unbounded (no min/max)
+    dateInput.addEventListener('input', recolorizeFromInputs);
+
+    // Initial trigger: once after both map load and the default date are set.
+    map.on('load', recolorizeFromInputs);
+    map.on('moveend', recolorizeFromInputs);
 
     const readout = document.getElementById('cursor-readout');
     map.on('mousemove', (e) => {
