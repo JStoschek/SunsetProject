@@ -38,3 +38,6 @@ CONTEXT.md
 
 # Generated tile pyramids (output of the tile encoder, issue 05)
 /frontend/tiles/
+
+# Node / JS tooling
+/node_modules/
