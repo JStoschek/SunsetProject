@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Sunset Project</title>
+  <link href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css" rel="stylesheet" />
+  <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body { width: 100%; height: 100%; }
+    #map { width: 100%; height: 100%; }
+    #cursor-readout {
+      position: fixed;
+      bottom: 10px;
+      left: 10px;
+      background: rgba(0, 0, 0, 0.6);
+      color: #fff;
+      font-family: monospace;
+      font-size: 13px;
+      padding: 4px 8px;
+      border-radius: 3px;
+      pointer-events: none;
+    }
+  </style>
+</head>
+<body>
+  <div id="map"></div>
+  <div id="cursor-readout">—</div>
+  <script>
+    // Encode 270° into channel space: (az - 200) / 160 * 255, rounded.
+    // R channel = encoded min_az, G channel = encoded max_az (ADR-0003).
+    const ENCODED_AZ = Math.round((270 - 200) / 160 * 255); // 112
+
+    // Transparent 1×1 PNG returned for tiles that do not exist in the pyramid
+    // (ocean tiles skipped during generation, outside data bounds, etc.)
+    const EMPTY_TILE = (() => {
+      const b64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=';
+      const bin = atob(b64);
+      const arr = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+      return arr.buffer;
+    })();
+
+    // Custom protocol: fetch raw visibility tiles, decode R/G channel encoding,
+    // and emit white (visible) / black (not visible) / transparent (no-data).
+    maplibregl.addProtocol('visibility', async (params) => {
+      const tileUrl = params.url.replace('visibility://', '');
+      const r = await fetch(tileUrl);
+      if (!r.ok) return { data: EMPTY_TILE };
+
+      const buf = await r.arrayBuffer();
+      const bitmap = await createImageBitmap(new Blob([buf]));
+      const canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(bitmap, 0, 0);
+      const id = ctx.getImageData(0, 0, canvas.width, canvas.height);
+      const d = id.data;
+      for (let i = 0; i < d.length; i += 4) {
+        if (d[i + 3] === 0) continue; // alpha=0: ocean / DEM no-data
+        if (d[i] <= ENCODED_AZ && d[i + 1] >= ENCODED_AZ) {
+          d[i] = 255; d[i + 1] = 255; d[i + 2] = 255; d[i + 3] = 255;
+        } else {
+          d[i] = 0; d[i + 1] = 0; d[i + 2] = 0; d[i + 3] = 255;
+        }
+      }
+      ctx.putImageData(id, 0, 0);
+      const blob = await canvas.convertToBlob();
+      return { data: await blob.arrayBuffer() };
+    });
+
+    const map = new maplibregl.Map({
+      container: 'map',
+      style: {
+        version: 8,
+        sources: {
+          osm: {
+            type: 'raster',
+            tiles: ['https://tile.openstreetmap.org/{z}/{x}/{y}.png'],
+            tileSize: 256,
+            attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap contributors</a>',
+            maxzoom: 19,
+          },
+          visibility: {
+            type: 'raster',
+            tiles: ['visibility://tiles/{z}/{x}/{y}.png'],
+            tileSize: 512,
+            minzoom: 6,
+            maxzoom: 14,
+            bounds: [-124, 37, -121, 39],
+            attribution: 'Sunset Visibility, USGS DEM',
+          },
+        },
+        layers: [
+          { id: 'osm', type: 'raster', source: 'osm' },
+          {
+            id: 'visibility',
+            type: 'raster',
+            source: 'visibility',
+            paint: {
+              'raster-opacity': 0.6,
+              'raster-resampling': 'nearest',
+            },
+          },
+        ],
+      },
+      center: [-122.5, 37.85],
+      zoom: 11,
+    });
+
+    const readout = document.getElementById('cursor-readout');
+    map.on('mousemove', (e) => {
+      const { lat, lng } = e.lngLat;
+      readout.textContent = `${lat.toFixed(4)}, ${lng.toFixed(4)}`;
+    });
+  </script>
+</body>
+</html>

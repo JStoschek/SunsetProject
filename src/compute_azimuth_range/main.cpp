@@ -1,7 +1,17 @@
 // compute_azimuth_range — for each cell in a bounding box, compute the range
 // of azimuths from which the ocean horizon is visible at sunset. Writes a
-// two-band Float32 GeoTIFF (band 1 = min_az, band 2 = max_az); never-visible
-// land and ocean pixels are NaN in both bands.
+// two-band Float32 GeoTIFF (band 1 = min_az, band 2 = max_az) with a
+// three-state encoding so downstream rendering can distinguish ocean from
+// land that is permanently behind a ridge:
+//
+//   (NaN,  NaN)  ocean or DEM-no-data — no measurement applies
+//   (+inf, -inf) land cell whose visible-azimuth range is empty (every
+//                swept azimuth was blocked by terrain)
+//   (min,  max)  land cell, visible at least once in [azimuth_min_deg,
+//                azimuth_max_deg]; min ≤ max, both finite
+//
+// The land/empty-range distinction is resolved by querying the ocean mask
+// (GSHHG) for every cell where the sweep produced no visible azimuth.
 //
 // Usage:
 //   compute_azimuth_range --config <pipeline.conf>
@@ -225,6 +235,25 @@ int main(int argc, char* argv[]) {
                     strip_index + 1, total_strips,
                     strip_min_lat, strip_max_lat, 16, "");
         std::fflush(stdout);
+
+        // Disambiguate ocean-or-no-data from never-visible-land. The sweep
+        // leaves both as NaN; we query the GSHHG ocean mask and rewrite the
+        // land NaNs to (+inf, -inf) so the encoder can render them opaque.
+        const float pos_inf = std::numeric_limits<float>::infinity();
+        const float neg_inf = -std::numeric_limits<float>::infinity();
+        for (int r = 0; r < strip_h; ++r) {
+            const double lat_pix = strip_min_lat + r * cell_deg;
+            for (int c = 0; c < strip_w; ++c) {
+                const std::size_t i =
+                    static_cast<std::size_t>(r) * strip_w + c;
+                if (!std::isnan(acc.min_az_buf[i])) continue;
+                const double lon_pix = min_lon + c * cell_deg;
+                if (!omr.is_water(lat_pix, lon_pix)) {
+                    acc.min_az_buf[i] = pos_inf;
+                    acc.max_az_buf[i] = neg_inf;
+                }
+            }
+        }
 
         // Flip each strip vertically (slice row 0 = south; GeoTIFF row 0 =
         // north) and write the block to the correct rows of the output.

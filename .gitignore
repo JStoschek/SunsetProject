@@ -35,3 +35,6 @@ install_manifest.txt
 CLAUDE.md
 CONTEXT.md
 *.tif
+
+# Generated tile pyramids (output of the tile encoder, issue 05)
+/frontend/tiles/

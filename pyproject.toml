@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "encode_tiles"
+version = "0.1.0"
+description = "Encode the compute_azimuth_range two-band GeoTIFF into an XYZ RGBA PNG tile pyramid."
+requires-python = ">=3.10"
+dependencies = [
+    "rasterio>=1.3",
+    "numpy>=1.24",
+    "Pillow>=10.0",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=7"]
+
+[project.scripts]
+encode_tiles = "encode_tiles.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["encode_tiles*"]
+
+[tool.pytest.ini_options]
+testpaths = ["src/encode_tiles/tests"]
+pythonpath = ["src"]

@@ -46,6 +46,18 @@ def test_both_nan_returns_transparent() -> None:
     assert encode_pixel(float("nan"), float("nan")) == (0, 0, 0, 0)
 
 
+def test_never_visible_sentinel_renders_always_black() -> None:
+    """(+inf, -inf) → opaque (255, 0, 0, 255) that no encoded az satisfies.
+
+    Frontend test: R ≤ q ≤ G simplifies to 255 ≤ q ≤ 0, which is false for
+    every q in [0, 255] — i.e., the pixel is black at every sunset azimuth.
+    """
+    r, g, b, a = encode_pixel(float("inf"), float("-inf"))
+    assert (r, g, b, a) == (255, 0, 0, 255)
+    for q in (0, 64, 112, 200, 255):
+        assert not (r <= q <= g), f"sentinel matched q={q}"
+
+
 @pytest.mark.parametrize(
     "min_az, max_az",
     [
