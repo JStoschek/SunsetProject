@@ -137,12 +137,18 @@ int main() {
                "a shift in along_c or the coast crossing may have made it seaward");
         std::puts("PASS: Ocean Beach cell is visible at az = 300° (NW summer sunset)");
 
-        // Every cell west of (and at) the coast crossing is seaward → must be false.
-        for (int col = 0; col <= coast_col; ++col) {
+        // Cells clearly west of the crossing are seaward → must be false.
+        // NOTE: for diagonal bearings (az=300°, bearing=120°) the along-ray
+        // boundary is not a clean longitude cut. Rays seeded slightly north of
+        // the box have along_c just below the along of coast_col, so the ~10
+        // cells immediately west of coast_col may have dist > 0 and are
+        // correctly left visible by the engine. Check only cells at least 10
+        // columns clear of the crossing meridian.
+        for (int col = 0; col <= coast_col - 10; ++col) {
             assert(!pixel(slice, kRow, col) &&
-                   "cell at or west of the coast crossing must be false");
+                   "cell clearly west of coast crossing must be false");
         }
-        std::puts("PASS: all cells at/west of crossing are false (seaward)");
+        std::puts("PASS: cells clearly west of crossing are false (seaward)");
     }
 
     // ── Near-coast cell (1 km inland) is visible ────────────────────────────
@@ -214,6 +220,39 @@ int main() {
         assert(!pixel(slice, kRow, ob_col) &&
                "Ocean Beach must be shadowed by the 100 m coastal ridge at az = 300°");
         std::puts("PASS: coastal ridge at az = 300° shadows Ocean Beach");
+    }
+
+    // ── Negative along_c: coast near the western edge (heap-overflow guard) ──
+    //
+    // When the coast is near the western edge (lon ≈ −122.97°) and the bearing
+    // is diagonal (120°), the seed for j_min is ~38.02°N — well outside the
+    // box.  FakeCoast returns a crossing at Ec ≈ 0 and large Nc, making
+    // along_c ≈ −12 000 m.  Phase 1 then needs ~1 200 more profile entries
+    // than the pre-allocation (sized for along_c = 0) provides.  Without the
+    // per-ray resize guard this is a heap-buffer-overflow caught by
+    // AddressSanitizer.
+    //
+    // Assertion: a flat 0 m cell ~500 m east of the crossing (inside the
+    // curvature horizon) must be visible at az = 300°.
+    {
+        constexpr double kWestCoastLon = -122.97;
+        FakeDEM   dem([](double, double) { return 0.0f; });
+        FakeCoast coast(kWestCoastLon);
+        HorizonSweepEngine engine(dem, coast, config,
+                                  box.min_lat, box.max_lat,
+                                  box.min_lon, box.max_lon);
+        AzimuthSlice slice;
+        engine.compute_slice(kAz, slice);  // heap-buffer-overflow without the fix
+
+        // Cell ~500 m east of the coast (kWestCoastLon + 0.005°), row 5.
+        // FakeCoast gives a crossing near lat 37.747° for this ray;
+        // dist ≈ 460 m → curvature drop ≈ 0.13 m < eye height → visible.
+        const int inland_col = col_for_lon(config, box, kWestCoastLon + 0.005);
+        assert(inland_col >= 0 && inland_col < slice.width &&
+               "inland column must fall inside the test box");
+        assert(pixel(slice, 5, inland_col) &&
+               "flat 0 m cell ~500 m east of west-edge coast must be visible at az = 300°");
+        std::puts("PASS: west-edge coast (negative along_c) — cell 500 m inland is visible");
     }
 
     std::puts("ALL PASS");

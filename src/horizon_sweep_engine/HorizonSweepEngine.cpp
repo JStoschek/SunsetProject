@@ -114,6 +114,16 @@ void HorizonSweepEngine::compute_slice(double azimuth_deg, AzimuthSlice& out) {
         const double Nc = (cross.coast_lat - min_lat_) * mpd;
         const double along_c = along_of(Ec, Nc);
 
+        // When along_c < 0 the Phase-1 march starts before the box origin
+        // (coast crossing north of the box for diagonal bearings with cos_b < 0).
+        // The pre-allocation above only budgets for along_c = 0; resize only when
+        // necessary — after the worst-case ray this guard becomes a no-op.
+        if (along_c < 0.0) {
+            const std::size_t needed =
+                static_cast<std::size_t>((along_max + step - along_c) / step) + 16;
+            if (profile_.size() < needed) profile_.resize(needed);
+        }
+
         // ── Phase 1: obstruction profile ────────────────────────────────
         // March from the crossing along the bearing, accumulating d (from the
         // Horizon Reference offset) and storing running_max_slope inclusive of
