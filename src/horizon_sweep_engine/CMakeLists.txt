@@ -48,3 +48,14 @@ target_compile_definitions(test_production_adapters PRIVATE
     GSHHG_FULL_PATH="${CMAKE_SOURCE_DIR}/data/GSHHG/data/0-data/gshhs_f.b"
 )
 add_test(NAME ProductionAdaptersIntegration COMMAND test_production_adapters)
+
+add_executable(test_coastal_regression tests/test_coastal_regression.cpp)
+target_link_libraries(test_coastal_regression PRIVATE horizon_sweep_engine)
+target_compile_definitions(test_coastal_regression PRIVATE
+    PIPELINE_CONF_PATH="${PIPELINE_CONF}"
+)
+add_test(NAME CoastalRegression COMMAND test_coastal_regression)
+# CoastalRegression pins Ocean Beach visibility at az=300° (NW summer sunset)
+# using FakeCoast + FakeDEM (no file I/O).  It catches engine-level regressions
+# that would shift along_c past Ocean Beach and silence the beach at NW azimuths.
+# The coast march itself is pinned by OceanOriginForRay (Cycles 8-9).

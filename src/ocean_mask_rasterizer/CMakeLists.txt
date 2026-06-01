@@ -35,6 +35,8 @@ target_compile_definitions(test_ocean_origin_for_ray PRIVATE
 )
 
 add_test(NAME OceanOriginForRay COMMAND test_ocean_origin_for_ray)
+# OceanOriginForRay includes Cycles 8-9 which pin the NW-sunset crossing for
+# Ocean Beach — the regression guard for b350d3e-style coast-march changes.
 
 add_executable(test_gshhg_spatial_index tests/test_gshhg_spatial_index.cpp)
 target_link_libraries(test_gshhg_spatial_index PRIVATE ocean_mask_rasterizer)

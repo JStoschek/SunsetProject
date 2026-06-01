@@ -125,6 +125,90 @@ int main() {
         std::puts("PASS: coast point is within 50 km of the near-shore input");
     }
 
+    // =========================================================================
+    // Coastal regression guard — Ocean Beach / NW summer-sunset bearing
+    // =========================================================================
+    //
+    // Motivation: commit b350d3e replaced the exact geo_destination() coast-march
+    // with an incremental loxodrome approximation.  The crossing moved, shifting
+    // along_c in the engine and silently blacking out Ocean Beach at NW sunset
+    // azimuths (max_az dropped from 300-301° to −inf/286-291°).  The commit's
+    // own tests passed because nothing pinned coastal output.  Cycles 8 and 9
+    // close that gap.
+    //
+    // Geometry:
+    //   Sunset azimuth 300° → bearing = (300+180)%360 = 120° (SE, ocean→land).
+    //   The engine seeds each ray at the western box edge and calls
+    //   ocean_origin_for_ray(120°, seed_lat, min_lon).  For the Ocean Beach cell
+    //   at (37.745°N, 122.508°W) the seed_lat is ≈37.760°N.
+    //   The exact great-circle march finds the coast at ≈(37.540°N, 122.518°W),
+    //   placing Ocean Beach ≈270 m inland of the crossing (dist > 0, visible).
+    //   Any march change that shifts crossing east of lon −122.508 makes
+    //   along_c > along_ob, giving dist < 0 and silently hiding Ocean Beach.
+
+    // --- Cycle 8: NW sunset crossing lands in the Ocean Beach longitude band ---
+    // From lat=37.760°N, lon=123.0°W in the open Pacific, marching SE at bearing
+    // 120° (the NW-summer-sunset ocean→land bearing) with production step size
+    // (0.05 km ≈ 5 DEM cells), the coast crossing must lie within the
+    // Ocean Beach / Outer Sunset longitude band: [−122.540°, −122.505°].
+    // The lower bound keeps the test from accepting a crossing at a grossly wrong
+    // feature; the upper bound is the critical guard — it asserts the crossing is
+    // west of the Ocean Beach shoreline at ~−122.508°, so that the beach cells
+    // have positive along-ray distance (dist > 0) and are therefore visible.
+    {
+        OceanMaskRasterizer omr(GSHHG_FULL_PATH);
+        // Production parameters: step=0.05 km, max=100 km.
+        auto r = omr.ocean_origin_for_ray(120.0, 37.760, -123.0, 0.05, 100.0);
+
+        assert(!omr.is_water(r.coast_lat, r.coast_lon) &&
+               "NW-sunset crossing must be on land");
+
+        // Longitude band: crossing must be west of Ocean Beach (~−122.508°).
+        // A march error that pushes the crossing east of −122.505° would place
+        // Ocean Beach seaward (dist < 0) and silence it at sunset az ≈ 300°.
+        assert(r.coast_lon <= -122.505 &&
+               "NW-sunset crossing must be west of Ocean Beach (lon ≤ −122.505°)");
+        assert(r.coast_lon >= -122.540 &&
+               "NW-sunset crossing must not overshoot west of the longitude band");
+
+        // Latitude band: SE march from 37.760° reaches the coast south of OB.
+        assert(r.coast_lat >= 37.52 && r.coast_lat <= 37.56 &&
+               "NW-sunset crossing latitude must fall in the Ocean Beach strip");
+
+        std::puts("PASS: NW-sunset crossing lands in the Ocean Beach longitude band");
+    }
+
+    // --- Cycle 9: production-seed crossing is pinned west of the OB shoreline --
+    // The engine calls ocean_origin_for_ray from the seed latitude for the Ocean
+    // Beach ray (≈37.970°N, derived from the rotated-frame geometry).  The exact
+    // great-circle march finds the crossing at ≈(37.747°N, −122.511°W) — well
+    // west of the Ocean Beach shoreline at −122.508°.
+    // This cycle pins that crossing to within ±0.003° in longitude (~265 m),
+    // tight enough that any march change shifting the crossing east by more than
+    // one DEM tile width would be caught.
+    {
+        OceanMaskRasterizer omr(GSHHG_FULL_PATH);
+        auto r = omr.ocean_origin_for_ray(120.0, 37.970, -123.0, 0.05, 100.0);
+
+        assert(!omr.is_water(r.coast_lat, r.coast_lon) &&
+               "engine-seed NW-sunset crossing must be on land");
+
+        // Critical lower bound: crossing must remain west of Ocean Beach so that
+        // the beach cells (lon ≈ −122.508°) are inland (dist > 0) and visible.
+        assert(r.coast_lon <= -122.508 &&
+               "engine-seed crossing must be strictly west of Ocean Beach");
+
+        // Tight upper bound: crossing must not move unreasonably far west.
+        assert(r.coast_lon >= -122.515 &&
+               "engine-seed crossing must not be more than 0.007° west of expected");
+
+        // Latitude pin: the SE march from ≈37.970° reaches the coast near 37.747°.
+        assert(r.coast_lat >= 37.740 && r.coast_lat <= 37.756 &&
+               "engine-seed crossing latitude must be near 37.747°N");
+
+        std::puts("PASS: engine-seed NW-sunset crossing is pinned west of Ocean Beach");
+    }
+
     std::puts("ALL PASS");
     return 0;
 }

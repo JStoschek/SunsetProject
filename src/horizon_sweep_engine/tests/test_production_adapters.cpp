@@ -143,7 +143,7 @@ int main() {
         DEMTileLoader         dem_loader(fixture_dir.string(), config.dem_lru_capacity);
         OceanMaskRasterizer   omr(GSHHG_FULL_PATH, config.ocean_lru_capacity);
         DEMAdapter            dem_adapter(dem_loader);
-        OceanAdapter          ocean_adapter(omr);
+        OceanAdapter          ocean_adapter(omr, config);
 
         HorizonSweepEngine engine(dem_adapter, ocean_adapter, config,
                                   kMinLat, kMaxLat, kMinLon, kMaxLon);
@@ -208,7 +208,7 @@ int main() {
         DEMTileLoader         dem_loader(fixture_dir.string(), tight.dem_lru_capacity);
         OceanMaskRasterizer   omr(GSHHG_FULL_PATH, tight.ocean_lru_capacity);
         DEMAdapter            dem_adapter(dem_loader);
-        OceanAdapter          ocean_adapter(omr);
+        OceanAdapter          ocean_adapter(omr, config);
 
         HorizonSweepEngine engine(dem_adapter, ocean_adapter, tight,
                                   kMinLat, kMaxLat, kMinLon, kMaxLon);
