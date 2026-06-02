@@ -44,74 +44,22 @@ float DEMTileLoader::get_elevation(double lat, double lon) {
         auto idx = index_.find(key);
         if (idx == index_.end())
             return std::numeric_limits<float>::quiet_NaN();
-        tile_ptr = &get_or_load(key, idx->second);
+        tile_ptr = get_or_load(key, idx->second).get();
         last_key_  = key;
         last_tile_ = tile_ptr;
     }
-    const TileData& tile = *tile_ptr;
-
-    // Raw pixel coordinates: 0 = left/top edge of first pixel; centre of pixel N is at N+0.5.
-    double raw_col = (lon - tile.gt[0]) / tile.gt[1];
-    double raw_row = (lat - tile.gt[3]) / tile.gt[5];
-
-    int col = (int)std::floor(raw_col);
-    int row = (int)std::floor(raw_row);
-
-    if (col < 0 || col >= tile.width || row < 0 || row >= tile.height)
-        return std::numeric_limits<float>::quiet_NaN();
-
-    // Continuous coordinate in pixel-centre space (centre of pixel N = N).
-    double px = raw_col - 0.5;
-    double py = raw_row - 0.5;
-
-    int col0 = (int)std::floor(px);
-    int row0 = (int)std::floor(py);
-    // Clamp so the right/bottom neighbour never exceeds the tile extent.
-    col0 = std::max(col0, 0);
-    row0 = std::max(row0, 0);
-    int col1 = std::min(col0 + 1, tile.width  - 1);
-    int row1 = std::min(row0 + 1, tile.height - 1);
-
-    double tx = px - col0;
-    double ty = py - row0;
-
-    // Nodata was pre-replaced with 0.0f at load time (see get_or_load), so this
-    // is a plain indexed load — no branch per pixel.
-    const float* px_data = tile.pixels.data();
-    const int W = tile.width;
-    float p00 = px_data[row0 * W + col0];
-    float p10 = px_data[row0 * W + col1];
-    float p01 = px_data[row1 * W + col0];
-    float p11 = px_data[row1 * W + col1];
-
-    return (float)((1.0 - ty) * ((1.0 - tx) * p00 + tx * p10) +
-                          ty  * ((1.0 - tx) * p01 + tx * p11));
+    return sample_elevation(*tile_ptr, lat, lon);
 }
 
-const DEMTileLoader::TileData& DEMTileLoader::get_or_load(const TileKey& key,
-                                                           const std::string& path)
-{
-    auto it = cache_.find(key);
-    if (it != cache_.end()) {
-        lru_list_.splice(lru_list_.begin(), lru_list_, it->second.lru_it);
-        return it->second.data;
-    }
-
-    // Evict LRU entry if at capacity. Invalidate last_tile_ if it points into
-    // the entry we're about to erase.
-    if ((int)cache_.size() >= lru_capacity_) {
-        if (lru_list_.back() == last_key_)
-            last_tile_ = nullptr;
-        cache_.erase(lru_list_.back());
-        lru_list_.pop_back();
-    }
-
-    // Load via GDAL
+// Read a tile from GDAL into a DEMTile, pre-replacing nodata with 0.0f so the
+// sampling hot path needs no per-pixel branch.  Shared by get_or_load (stateful
+// LRU path) and freeze (per-strip frozen path).
+static DEMTile load_tile(const std::string& path) {
     GDALDataset* ds = (GDALDataset*)GDALOpen(path.c_str(), GA_ReadOnly);
     if (!ds)
         throw std::runtime_error("Cannot open tile: " + path);
 
-    TileData td;
+    DEMTile td;
     if (ds->GetGeoTransform(td.gt) != CE_None) {
         GDALClose(ds);
         throw std::runtime_error("Cannot read geotransform: " + path);
@@ -122,10 +70,9 @@ const DEMTileLoader::TileData& DEMTileLoader::get_or_load(const TileKey& key,
 
     GDALRasterBand* band = ds->GetRasterBand(1);
     int has_nodata = 0;
-    td.nodata_value = band->GetNoDataValue(&has_nodata);
-    td.has_nodata   = (has_nodata != 0);
+    const double nodata_value = band->GetNoDataValue(&has_nodata);
 
-    td.pixels.resize(td.width * td.height);
+    td.pixels.resize(static_cast<std::size_t>(td.width) * td.height);
     CPLErr err = band->RasterIO(GF_Read, 0, 0, td.width, td.height,
                                  td.pixels.data(), td.width, td.height,
                                  GDT_Float32, 0, 0);
@@ -134,19 +81,53 @@ const DEMTileLoader::TileData& DEMTileLoader::get_or_load(const TileKey& key,
     if (err != CE_None)
         throw std::runtime_error("Cannot read tile data: " + path);
 
-    // Pre-replace nodata with 0.0 once at load time, so get_elevation's hot
-    // inner loop can do a plain indexed load with no branch per pixel.
-    if (td.has_nodata) {
-        const float nd = static_cast<float>(td.nodata_value);
-        for (float& v : td.pixels) {
+    if (has_nodata) {
+        const float nd = static_cast<float>(nodata_value);
+        for (float& v : td.pixels)
             if (v == nd) v = 0.0f;
-        }
-        td.has_nodata = false;
+    }
+    return td;
+}
+
+std::shared_ptr<const DEMTileLoader::TileData>
+DEMTileLoader::get_or_load(const TileKey& key, const std::string& path)
+{
+    auto it = cache_.find(key);
+    if (it != cache_.end()) {
+        lru_list_.splice(lru_list_.begin(), lru_list_, it->second.lru_it);
+        return it->second.data;
+    }
+
+    // Evict LRU entry if at capacity. Invalidate last_tile_ if it points into
+    // the entry we're about to erase.  The shared buffer survives eviction as
+    // long as a FrozenDEM still references it.
+    if ((int)cache_.size() >= lru_capacity_) {
+        if (lru_list_.back() == last_key_)
+            last_tile_ = nullptr;
+        cache_.erase(lru_list_.back());
+        lru_list_.pop_back();
     }
 
     lru_list_.push_front(key);
     auto& entry  = cache_[key];
-    entry.data   = std::move(td);
+    entry.data   = std::make_shared<const TileData>(load_tile(path));
     entry.lru_it = lru_list_.begin();
     return entry.data;
+}
+
+FrozenDEM DEMTileLoader::freeze(const std::set<std::pair<int, int>>& geo_keys)
+{
+    FrozenDEM frozen;
+    for (const auto& [geo_lat, geo_lon] : geo_keys) {
+        // Translate the geographic-floor key to the loader's NW-corner key by
+        // sampling the tile's interior, so freeze and get_elevation agree.
+        const TileKey key = dem_tile_key(geo_lat + 0.5, geo_lon + 0.5);
+        auto idx = index_.find(key);
+        if (idx == index_.end())
+            continue;  // no tile file for this key — leave it unfrozen
+        // Reuses the cached buffer when resident (no reload across strips); the
+        // FrozenDEM keeps its own shared_ptr so eviction can't free it mid-strip.
+        frozen.insert(key, get_or_load(key, idx->second));
+    }
+    return frozen;
 }

@@ -50,6 +50,9 @@ public:
     /// reused across calls: each call zeroes and refills the same buffer.
     void compute_slice(double azimuth_deg, AzimuthSlice& out);
 
+    int width()  const { return width_; }
+    int height() const { return height_; }
+
 private:
     ElevationSource& dem_;
     CoastlineFinder& ocean_;

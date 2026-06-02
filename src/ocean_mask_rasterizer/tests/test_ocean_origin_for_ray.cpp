@@ -43,50 +43,6 @@ int main() {
     const double lat =  37.9;
     const double lon = -122.7;
 
-    // --- Cycle 1: origin is in the open Pacific --------------------------------
-    // For a near-shore input west of the Marin coast, marching east hits the
-    // coast; the returned origin must be well into the open Pacific (lon < -123.5°).
-    {
-        OceanMaskRasterizer omr(GSHHG_FULL_PATH);
-        auto r = omr.ocean_origin_for_ray(az, lat, lon);
-        assert(r.origin_lon < -123.5 && "origin must be in open Pacific, not near shore");
-        std::puts("PASS: origin is in open Pacific (lon < -123.5°W)");
-    }
-
-    // --- Cycle 2: origin is at least 190 km west of the near-shore input ------
-    // 200 km back from the crossing + crossing-to-input distance (a few km) ≥ 190 km.
-    {
-        OceanMaskRasterizer omr(GSHHG_FULL_PATH);
-        auto r = omr.ocean_origin_for_ray(az, lat, lon);
-        const double dist = haversine_km(lat, lon, r.origin_lat, r.origin_lon);
-        assert(dist >= 190.0 && "origin must be >= 190 km west of near-shore input");
-        std::puts("PASS: origin is >= 190 km from near-shore input");
-    }
-
-    // --- Cycle 3: origin passes is_water --------------------------------------
-    // The 200 km offset into open Pacific should land on water.
-    {
-        OceanMaskRasterizer omr(GSHHG_FULL_PATH);
-        auto r = omr.ocean_origin_for_ray(az, lat, lon);
-        assert(omr.is_water(r.origin_lat, r.origin_lon) && "origin must be in water");
-        std::puts("PASS: origin passes is_water");
-    }
-
-    // --- Cycle 4: origin lies along back-azimuth from input -------------------
-    // For azimuth=90° the back-azimuth is 270° (due west).  The bearing from
-    // the near-shore input to the origin should be within ±10° of 270°.
-    {
-        OceanMaskRasterizer omr(GSHHG_FULL_PATH);
-        auto r = omr.ocean_origin_for_ray(az, lat, lon);
-        const double b = bearing_deg(lat, lon, r.origin_lat, r.origin_lon);
-        // Angular difference, wrapped to [-180, 180].
-        double diff = b - 270.0;
-        if (diff >  180.0) diff -= 360.0;
-        if (diff < -180.0) diff += 360.0;
-        assert(std::abs(diff) <= 10.0 && "origin must lie along back-azimuth (270° ± 10°)");
-        std::puts("PASS: origin lies along back-azimuth (270° ± 10°)");
-    }
-
     // --- Cycle 5: coast point is on land --------------------------------------
     // The coastline crossing is the first pixel where is_water returns false.
     // The returned coast_lat / coast_lon must therefore fail is_water.

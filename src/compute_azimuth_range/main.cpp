@@ -24,17 +24,26 @@
 #include <cmath>
 #include <cstdio>
 #include <limits>
+#include <memory>
+#include <set>
 #include <stdexcept>
 #include <string>
+#include <thread>
+#include <utility>
 #include <vector>
 
 #include <gdal_priv.h>
 #include <ogr_spatialref.h>
 
-#include "AzimuthRangeAccumulator.h"
+#include "AzimuthRangeSweep.h"
+#include "FrozenStripSources.h"
 #include "HorizonSweepEngine.h"
+#include "OsmWaterPolygonSource.h"
 #include "PipelineConfig.h"
 #include "ProductionAdapters.h"
+#include "StripPostProcess.h"
+#include "StripWorkingSet.h"
+#include "ThreadPool.h"
 
 // ---------------------------------------------------------------------------
 // CLI parsing
@@ -119,11 +128,16 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
+    // Resolve worker_threads = 0 to all hardware cores.
+    const int nw = (config.worker_threads > 0)
+                 ? config.worker_threads
+                 : static_cast<int>(std::thread::hardware_concurrency());
+
     std::printf("compute_azimuth_range: bbox [%.4f,%.4f]–[%.4f,%.4f]"
-                "  azimuths %.1f–%.1f step %.1f  output %s\n",
+                "  azimuths %.1f–%.1f step %.1f  workers %d  output %s\n",
                 min_lat, min_lon, max_lat, max_lon,
                 config.azimuth_min_deg, config.azimuth_max_deg,
-                config.azimuth_step_deg, a.output_path.c_str());
+                config.azimuth_step_deg, nw, a.output_path.c_str());
     std::printf("Output grid: %d × %d pixels (cell = %.6f°)\n",
                 total_width, total_height, cell_deg);
 
@@ -169,11 +183,19 @@ int main(int argc, char* argv[]) {
     band_min->SetDescription("min_az_deg");
     band_max->SetDescription("max_az_deg");
 
-    // ── Shared production adapters (one instance, reused per strip) ──────
+    // ── Shared production loaders (one instance, reused per strip) ────────
+    // Used serially: to freeze each strip's working set before its parallel
+    // region, and for water-disambiguation after it.  Workers never touch these
+    // directly — they read through the per-strip frozen views.
     DEMTileLoader       dem_loader(config.dem_dir,   config.dem_lru_capacity);
-    OceanMaskRasterizer omr(config.gshhg_path,        config.ocean_lru_capacity);
-    DEMAdapter          dem_adapter(dem_loader);
-    OceanAdapter        ocean_adapter(omr, config);
+    OceanMaskRasterizer omr(
+        std::make_unique<OsmWaterPolygonSource>(config.osm_water_polygons_path,
+                                                config.osm_inland_water_path),
+        config.ocean_lru_capacity);
+
+    // ── Thread pool: created once, reused across all strips ───────────────
+    config.worker_threads = nw;  // store resolved count for sweep_strip
+    ThreadPool pool(nw);
 
     // ── Strip loop (south → north) ───────────────────────────────────────
     if (config.strip_height_deg <= 0.0) {
@@ -196,69 +218,39 @@ int main(int argc, char* argv[]) {
         double strip_max_lat = strip_min_lat + config.strip_height_deg;
         if (strip_max_lat > max_lat) strip_max_lat = max_lat;
 
-        HorizonSweepEngine engine(dem_adapter, ocean_adapter, config,
-                                  strip_min_lat, strip_max_lat,
-                                  min_lon, max_lon);
-
-        AzimuthSlice slice;
-        // Run one slice up-front so we can size the accumulator from the
-        // engine's reported dimensions for this strip.
-        int az_idx = 1;
-        std::printf("  strip %d/%d  lat [%.4f, %.4f]  az %.0f°  [%d/%d]  \r",
+        std::printf("  strip %d/%d  lat [%.4f, %.4f]  %d azimuths  workers %d\n",
                     strip_index + 1, total_strips,
-                    strip_min_lat, strip_max_lat,
-                    config.azimuth_min_deg, az_idx, az_count);
+                    strip_min_lat, strip_max_lat, az_count, nw);
         std::fflush(stdout);
-        engine.compute_slice(config.azimuth_min_deg, slice);
 
-        const int strip_w = slice.width;
-        const int strip_h = slice.height;
+        // Freeze the strip's working set (bbox + ray-tilt margin) into
+        // eviction-free per-strip caches, then hand each worker its own
+        // lock-free view onto the shared frozen tiles.
+        const std::set<std::pair<int, int>> work = strip_working_set(
+            strip_min_lat, strip_max_lat, min_lon, max_lon,
+            config.strip_tilt_margin_deg);
+        const FrozenDEM   frozen_dem   = dem_loader.freeze(work);
+        const FrozenOcean frozen_ocean = omr.freeze(work);
+        FrozenStripSources sources(frozen_dem, frozen_ocean, config, nw);
+
+        StripResult result = sweep_strip(sources, config, pool,
+                                         strip_min_lat, strip_max_lat,
+                                         min_lon, max_lon);
+
+        const int strip_w = result.width;
+        const int strip_h = result.height;
         const std::size_t n_pix =
             static_cast<std::size_t>(strip_w) * strip_h;
 
-        AzimuthRangeAccumulator acc(n_pix);
-        acc.accumulate(slice, config.azimuth_min_deg);
-
-        for (double az = config.azimuth_min_deg + config.azimuth_step_deg;
-             az <= config.azimuth_max_deg + 0.5 * config.azimuth_step_deg;
-             az += config.azimuth_step_deg) {
-            ++az_idx;
-            std::printf("  strip %d/%d  lat [%.4f, %.4f]  az %.0f°  [%d/%d]  \r",
-                        strip_index + 1, total_strips,
-                        strip_min_lat, strip_max_lat,
-                        az, az_idx, az_count);
-            std::fflush(stdout);
-            engine.compute_slice(az, slice);
-            acc.accumulate(slice, az);
-        }
-        std::printf("  strip %d/%d  lat [%.4f, %.4f]  done%*s\n",
-                    strip_index + 1, total_strips,
-                    strip_min_lat, strip_max_lat, 16, "");
-        std::fflush(stdout);
-
-        // Disambiguate ocean-or-no-data from never-visible-land. The sweep
-        // leaves both as NaN; we query the GSHHG ocean mask and rewrite the
-        // land NaNs to (+inf, -inf) so the encoder can render them opaque.
-        const float pos_inf = std::numeric_limits<float>::infinity();
-        const float neg_inf = -std::numeric_limits<float>::infinity();
-        for (int r = 0; r < strip_h; ++r) {
-            const double lat_pix = strip_min_lat + r * cell_deg;
-            for (int c = 0; c < strip_w; ++c) {
-                const std::size_t i =
-                    static_cast<std::size_t>(r) * strip_w + c;
-                if (!std::isnan(acc.min_az_buf[i])) continue;
-                const double lon_pix = min_lon + c * cell_deg;
-                if (!omr.is_water(lat_pix, lon_pix)) {
-                    acc.min_az_buf[i] = pos_inf;
-                    acc.max_az_buf[i] = neg_inf;
-                }
-            }
-        }
+        // Force every water pixel transparent and every land pixel that earned
+        // no visible azimuth to the never-visible sentinel (+inf, -inf).
+        apply_water_mask(result, strip_min_lat, min_lon, cell_deg,
+                         [&omr](double lat, double lon) {
+                             return omr.is_water(lat, lon);
+                         });
 
         // Flip each strip vertically (slice row 0 = south; GeoTIFF row 0 =
         // north) and write the block to the correct rows of the output.
-        // Global GeoTIFF Y-offset for the top (north) edge of this strip:
-        //   y_off = total_height - rows_written_from_south - strip_h
         const int y_off = total_height - rows_written_from_south - strip_h;
         if (y_off < 0) {
             std::fprintf(stderr,
@@ -271,7 +263,7 @@ int main(int argc, char* argv[]) {
         std::vector<float> flipped(n_pix);
         for (int band_idx = 0; band_idx < 2; ++band_idx) {
             const std::vector<float>& src =
-                (band_idx == 0) ? acc.min_az_buf : acc.max_az_buf;
+                (band_idx == 0) ? result.min_az_buf : result.max_az_buf;
             for (int r = 0; r < strip_h; ++r) {
                 const int tiff_row_in_strip = strip_h - 1 - r;
                 std::copy_n(

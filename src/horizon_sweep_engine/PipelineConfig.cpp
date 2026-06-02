@@ -31,12 +31,24 @@ int require_int(const std::map<std::string, std::string>& kv,
     return std::stoi(it->second);
 }
 
+double optional_double(const std::map<std::string, std::string>& kv,
+                       const std::string& key, double fallback) {
+    const auto it = kv.find(key);
+    return it == kv.end() ? fallback : std::stod(it->second);
+}
+
 std::string require_string(const std::map<std::string, std::string>& kv,
                            const std::string& key) {
     const auto it = kv.find(key);
     if (it == kv.end())
         throw std::runtime_error("PipelineConfig: missing required key '" + key + "'");
     return it->second;
+}
+
+std::string optional_string(const std::map<std::string, std::string>& kv,
+                            const std::string& key, const std::string& fallback) {
+    const auto it = kv.find(key);
+    return it == kv.end() ? fallback : it->second;
 }
 
 }  // namespace
@@ -72,11 +84,14 @@ PipelineConfig PipelineConfig::load(const std::string& path) {
     c.azimuth_max_deg            = require_double(kv, "azimuth_max_deg");
     c.azimuth_step_deg           = require_double(kv, "azimuth_step_deg");
     c.strip_height_deg           = require_double(kv, "strip_height_deg");
+    c.strip_tilt_margin_deg      = optional_double(kv, "strip_tilt_margin_deg", 0.65);
     c.coast_march_step_km        = require_double(kv, "coast_march_step_km");
     c.coast_march_max_km         = require_double(kv, "coast_march_max_km");
+    c.worker_threads             = require_int(kv, "worker_threads");
     c.dem_lru_capacity           = require_int(kv, "dem_lru_capacity");
     c.ocean_lru_capacity         = require_int(kv, "ocean_lru_capacity");
     c.dem_dir                    = require_string(kv, "dem_dir");
-    c.gshhg_path                 = require_string(kv, "gshhg_path");
+    c.osm_water_polygons_path    = require_string(kv, "osm_water_polygons_path");
+    c.osm_inland_water_path      = optional_string(kv, "osm_inland_water_path", "");
     return c;
 }

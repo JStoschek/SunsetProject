@@ -32,11 +32,6 @@ struct FakeCoast : CoastlineFinder {
         const double crossing_lat =
             lat + (coast_lon - lon) * std::cos(lat * kPi / 180.0) *
                       std::cos(b) / std::sin(b);
-        OceanOriginResult r;
-        r.origin_lat = crossing_lat;  // vestigial (engine ignores the 200 km origin)
-        r.origin_lon = coast_lon;     // "
-        r.coast_lat  = crossing_lat;
-        r.coast_lon  = coast_lon;
-        return r;
+        return { crossing_lat, coast_lon };
     }
 };

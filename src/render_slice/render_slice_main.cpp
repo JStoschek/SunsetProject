@@ -17,6 +17,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <memory>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -24,6 +25,7 @@
 #include <gdal_priv.h>
 #include <ogr_spatialref.h>
 
+#include "OsmWaterPolygonSource.h"
 #include "ProductionAdapters.h"
 #include "PipelineConfig.h"
 
@@ -111,7 +113,10 @@ int main(int argc, char* argv[]) {
     GDALAllRegister();
 
     DEMTileLoader       dem_loader(config.dem_dir,   config.dem_lru_capacity);
-    OceanMaskRasterizer omr(config.gshhg_path,        config.ocean_lru_capacity);
+    OceanMaskRasterizer omr(
+        std::make_unique<OsmWaterPolygonSource>(config.osm_water_polygons_path,
+                                                config.osm_inland_water_path),
+        config.ocean_lru_capacity);
     DEMAdapter          dem_adapter(dem_loader);
     OceanAdapter        ocean_adapter(omr, config);
 

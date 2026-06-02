@@ -27,10 +27,15 @@ struct PipelineConfig {
 
     // ── Azimuth range pipeline ──────────────────────────────────────────
     double strip_height_deg;           ///< latitude height of each processing strip
+    double strip_tilt_margin_deg;      ///< lat margin added N/S to a strip's frozen
+                                       ///< working set for the ray tilt (ADR-0007)
 
     // ── Coast finding ───────────────────────────────────────────────────
     double coast_march_step_km;        ///< eastward is_water march step
     double coast_march_max_km;         ///< give-up distance for the coast search
+
+    // ── Parallelism ──────────────────────────────────────────────────────
+    int    worker_threads;             ///< pool size; 0 = std::thread::hardware_concurrency()
 
     // ── Tile caches ─────────────────────────────────────────────────────
     int    dem_lru_capacity;           ///< DEM tiles held resident
@@ -38,7 +43,10 @@ struct PipelineConfig {
 
     // ── Data paths ───────────────────────────────────────────────────
     std::string dem_dir;               ///< directory containing USGS GeoTIFF tiles
-    std::string gshhg_path;            ///< path to gshhs_f.b full-resolution GSHHG file
+    std::string osm_water_polygons_path; ///< osmdata split `water-polygons` shapefile
+                                         ///< (ocean + coastline); the Ocean Mask source
+    std::string osm_inland_water_path;   ///< Geofabrik `natural=water` extract (inland
+                                         ///< lakes/ponds); empty to omit inland water
 
     /// Parse a pipeline config file. Lines are `key = value`; `#` begins a
     /// comment; blank lines are ignored. Throws std::runtime_error if the file

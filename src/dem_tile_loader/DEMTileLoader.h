@@ -1,10 +1,15 @@
 #pragma once
 #include <climits>
 #include <list>
+#include <memory>
+#include <set>
 #include <string>
 #include <unordered_map>
 #include <utility>
 #include <vector>
+
+#include "DEMTile.h"
+#include "FrozenDEM.h"
 
 class DEMTileLoader {
 public:
@@ -12,27 +17,21 @@ public:
     float get_elevation(double lat, double lon);
     std::size_t tile_count() const { return index_.size(); }
 
+    // Build a frozen, eviction-free snapshot of the tiles in `geo_keys` (the
+    // strip working set, in geographic-floor (floor_lat, floor_lon) keys as
+    // returned by strip_working_set).  Loads each tile fresh; the stateful LRU
+    // cache is left untouched for the serial phases.  Keys with no matching tile
+    // file are skipped (their reads return no-data via FrozenDEM::find).
+    FrozenDEM freeze(const std::set<std::pair<int, int>>& geo_keys);
+
 private:
-    struct PairHash {
-        std::size_t operator()(std::pair<int, int> p) const noexcept {
-            return std::hash<long long>{}((long long)p.first << 32 | (unsigned int)p.second);
-        }
-    };
-
-    using TileKey = std::pair<int, int>;
-
-    struct TileData {
-        std::vector<float> pixels;
-        int width  = 0;
-        int height = 0;
-        double gt[6] = {};
-        double nodata_value = 0.0;
-        bool has_nodata = false;
-    };
+    using TileKey  = DEMTileKey;
+    using PairHash = DEMTileKeyHash;
+    using TileData = DEMTile;
 
     struct CacheEntry {
-        TileData data;
-        std::list<TileKey>::iterator lru_it;
+        std::shared_ptr<const TileData> data;
+        std::list<TileKey>::iterator    lru_it;
     };
 
     std::unordered_map<TileKey, std::string, PairHash>    index_;
@@ -46,5 +45,9 @@ private:
     TileKey         last_key_{INT_MAX, INT_MAX};
     const TileData* last_tile_ = nullptr;  // null after eviction or first call
 
-    const TileData& get_or_load(const TileKey& key, const std::string& path);
+    // Load `key` into the cache (or return the resident copy), updating the LRU.
+    // The shared buffer lets freeze() hand the same data to a FrozenDEM with no
+    // reload or copy.
+    std::shared_ptr<const TileData> get_or_load(const TileKey& key,
+                                                const std::string& path);
 };

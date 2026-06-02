@@ -26,3 +26,9 @@ add_executable(test_lru_eviction tests/test_lru_eviction.cpp)
 target_link_libraries(test_lru_eviction PRIVATE dem_tile_loader GDAL::GDAL)
 
 add_test(NAME LruEviction COMMAND test_lru_eviction)
+
+find_package(Threads REQUIRED)
+add_executable(test_frozen_dem_view tests/test_frozen_dem_view.cpp)
+target_link_libraries(test_frozen_dem_view PRIVATE dem_tile_loader GDAL::GDAL Threads::Threads)
+
+add_test(NAME FrozenDemView COMMAND test_frozen_dem_view)

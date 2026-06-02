@@ -17,8 +17,7 @@ private:
 
 // `bearing` is the ocean→land march bearing = (sunset_az + 180) mod 360.
 // Delegates directly to OceanMaskRasterizer::ocean_origin_for_ray, which
-// accepts the same convention.  Only the coastline crossing fields are used
-// by the engine; the 200 km origin fields are ignored.
+// accepts the same convention.
 struct OceanAdapter : CoastlineFinder {
     OceanAdapter(OceanMaskRasterizer& omr, const PipelineConfig& config)
         : omr_(omr), config_(config) {}
