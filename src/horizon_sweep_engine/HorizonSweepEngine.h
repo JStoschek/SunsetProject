@@ -1,4 +1,5 @@
 #pragma once
+#include <functional>
 #include <vector>
 
 #include "OceanMaskRasterizer.h"  // OceanOriginResult (struct only; no GDAL pulled in)
@@ -50,6 +51,25 @@ public:
     /// reused across calls: each call zeroes and refills the same buffer.
     void compute_slice(double azimuth_deg, AzimuthSlice& out);
 
+    /// Diagnostic per-step ray trace (off by default; zero overhead when off).
+    /// When enabled, compute_slice identifies the single parallel ray that
+    /// passes through (target_lat, target_lon) and prints, for that ray only,
+    /// the exact Phase-1/Phase-2 quantities at each 1/3-arc-second march step —
+    /// from `steps_before` steps seaward of the coastline crossing through
+    /// `steps_after` steps inland. The trace records the very same `prof[]`,
+    /// `h_adj`, `d` and visibility comparison the production sweep computes, so
+    /// it shows what the engine actually does rather than a re-derivation.
+    /// `water_query` (optional) supplies the is_water column for context.
+    struct RayTrace {
+        bool   enabled      = false;
+        double target_lat   = 0.0;
+        double target_lon   = 0.0;
+        int    steps_before = 100;  ///< steps seaward of the crossing to print
+        int    steps_after  = 100;  ///< steps inland of the crossing to print
+        std::function<bool(double lat, double lon)> water_query;  ///< optional
+    };
+    void set_trace(const RayTrace& trace) { trace_ = trace; }
+
     int width()  const { return width_; }
     int height() const { return height_; }
 
@@ -63,4 +83,5 @@ private:
     int    width_, height_;
 
     std::vector<float> profile_;  ///< reused Phase-1 obstruction buffer
+    RayTrace           trace_;    ///< diagnostic trace config (disabled by default)
 };

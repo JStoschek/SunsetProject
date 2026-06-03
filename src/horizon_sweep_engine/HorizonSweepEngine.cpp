@@ -1,7 +1,10 @@
 #include "HorizonSweepEngine.h"
 
 #include <algorithm>
+#include <climits>
 #include <cmath>
+#include <cstdio>
+#include <vector>
 
 namespace {
 constexpr double kPi = 3.14159265358979323846;
@@ -47,6 +50,7 @@ void HorizonSweepEngine::compute_slice(double azimuth_deg, AzimuthSlice& out) {
     const double R = config_.earth_radius_m;
     const double c = (1.0 - 2.0 * k) / (2.0 * R);
     const double offset = config_.horizon_reference_offset_m;
+    const double skip   = config_.coast_obstruction_skip_m;  // passable foreshore depth (m)
     const double eye    = config_.observer_eye_height_m;
     const double mpd    = config_.meters_per_degree_lat;
     const double step   = config_.march_step_m;
@@ -71,6 +75,21 @@ void HorizonSweepEngine::compute_slice(double azimuth_deg, AzimuthSlice& out) {
     // along/perp of a pixel relative to the box anchor.
     auto along_of = [&](double E, double N) { return E * sin_b + N * cos_b; };
     auto perp_of  = [&](double E, double N) { return E * cos_b - N * sin_b; };
+
+    // ── Diagnostic trace setup (no-op unless trace_.enabled) ────────────────
+    // Resolve which parallel ray index carries the target pixel, so Phase 1 can
+    // record that one ray and we can dump it after its profile is built.
+    long trace_j = LONG_MIN;
+    if (trace_.enabled) {
+        const double Et = (trace_.target_lon - min_lon_) * mE;
+        const double Nt = (trace_.target_lat - min_lat_) * mpd;
+        trace_j = std::lround(perp_of(Et, Nt) / s);
+    }
+    struct TraceStep {
+        int    idx; double along, d, lat, lon; float h; double h_adj;
+        bool   in_skip; double running_max;
+    };
+    std::vector<TraceStep> trace_rec;
 
     // Ray index range: perp and along are linear, so the extremes lie at the
     // box corners. along_max bounds how far Phase 1 must march.
@@ -141,12 +160,23 @@ void HorizonSweepEngine::compute_slice(double azimuth_deg, AzimuthSlice& out) {
         double d   = offset;
         double along = along_c;
         double running_max = 0.0;
+        const bool tracing = trace_.enabled && j == trace_j;
         while (along <= along_max + step) {
             float h = dem_.get_elevation(lat, lon);
             if (std::isnan(h)) h = 0.0f;
             const double h_adj = h - d * d * c;
-            running_max = std::max(running_max, h_adj / d);
+            // Terrain within the passable foreshore (first `skip` metres inland of
+            // the crossing) does not raise the obstruction profile: low foredunes
+            // and berms right at the shore should not shadow the flat in their own
+            // lee where an observer plainly sees the ocean horizon. Real relief
+            // farther inland still accumulates normally.
+            const bool in_skip = (d - offset < skip);
+            if (!in_skip)
+                running_max = std::max(running_max, h_adj / d);
             prof[n++] = static_cast<float>(running_max);
+            if (tracing && n - 1 <= trace_.steps_after)
+                trace_rec.push_back({n - 1, along, d, lat, lon, h, h_adj,
+                                     in_skip, running_max});
 
             const double dnorth_m = step * cos_b;
             const double deast_m  = step * sin_b;
@@ -157,6 +187,77 @@ void HorizonSweepEngine::compute_slice(double azimuth_deg, AzimuthSlice& out) {
         }
         if (n == 0) continue;
         const int last = n - 1;
+
+        // ── Diagnostic trace dump (target ray only) ─────────────────────
+        if (tracing) {
+            std::printf(
+                "\n==== HorizonSweepEngine ray trace ====\n"
+                "sunset azimuth   : %.3f deg\n"
+                "march bearing    : %.3f deg (ocean->land)\n"
+                "target           : (%.6f, %.6f)\n"
+                "ray index j      : %ld\n"
+                "coast crossing   : (%.6f, %.6f)  [Phase-1 step 0]\n"
+                "along_c          : %.3f m\n"
+                "config: offset(d@coast)=%.1f m  eye=%.2f m  skip=%.1f m  "
+                "step=%.4f m  k=%.3f  R=%.0f m  c=%.6e\n\n",
+                azimuth_deg, bearing, trace_.target_lat, trace_.target_lon,
+                trace_j, cross.coast_lat, cross.coast_lon, along_c,
+                offset, eye, skip, step, k, R, c);
+
+            std::printf(
+                "%6s %12s %10s %10s %11s %11s %9s %8s %5s %12s %12s %4s %4s\n",
+                "step", "lat", "lon", "d_m", "along_m", "elev_m", "h_adj",
+                "water", "skip", "max_slope", "obs_slope", "vis", "side");
+            std::printf(
+                "------ ------------ ---------- ---------- ----------- "
+                "----------- --------- -------- ----- ------------ "
+                "------------ ---- ----\n");
+
+            auto water_at = [&](double la, double lo) -> const char* {
+                if (!trace_.water_query) return "?";
+                return trace_.water_query(la, lo) ? "water" : "land";
+            };
+
+            // Seaward context: march back from the crossing (opposite bearing).
+            // These pixels are seaward of the crossing, so Phase 2 always leaves
+            // them not-visible (dist < 0); we print is_water/elevation so the
+            // coastline crossing itself is visible in the table.
+            const int nb = trace_.steps_before;
+            for (int m = nb; m >= 1; --m) {
+                double la = cross.coast_lat, lo = cross.coast_lon;
+                for (int b = 0; b < m; ++b) {
+                    la -= step * cos_b / mpd;
+                    lo -= step * sin_b / (mpd * std::cos(deg2rad(la)));
+                }
+                const double dd = offset - m * step;
+                float h = dem_.get_elevation(la, lo);
+                char elev[16];
+                if (std::isnan(h))
+                    std::snprintf(elev, sizeof elev, "%11s", "nodata");
+                else
+                    std::snprintf(elev, sizeof elev, "%11.3f", (double)h);
+                std::printf(
+                    "%6d %12.6f %10.6f %10.2f %11.2f %s %9s %8s %5s %12s "
+                    "%12s %4s %4s\n",
+                    -m, la, lo, dd, -static_cast<double>(m) * step, elev,
+                    "-", water_at(la, lo), "-", "-", "-", "F", "sea");
+            }
+
+            // Inland: replay the recorded Phase-1 steps with the exact Phase-2
+            // observer test, prof[idx] == running_max at that same step.
+            for (const TraceStep& t : trace_rec) {
+                const double obs_slope = (t.h_adj + eye) / t.d;
+                const bool   visible   = obs_slope >= t.running_max;
+                std::printf(
+                    "%6d %12.6f %10.6f %10.2f %11.2f %11.3f %9.3f %8s %5s "
+                    "%12.7f %12.7f %4s %4s\n",
+                    t.idx, t.lat, t.lon, t.d, t.along, (double)t.h, t.h_adj,
+                    water_at(t.lat, t.lon), t.in_skip ? "yes" : "no",
+                    t.running_max, obs_slope, visible ? "T" : "F", "land");
+            }
+            std::printf("\n");
+            std::fflush(stdout);
+        }
 
         // ── Phase 2: observers ──────────────────────────────────────────
         // For every pixel on this ray (a contiguous column interval per row,

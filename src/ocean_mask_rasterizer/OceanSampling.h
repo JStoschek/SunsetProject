@@ -50,14 +50,36 @@ inline std::pair<double, double> geo_destination(double lat, double lon,
 // (the coastline crossing) and return that crossing.  If no coast is found
 // within max_km, returns the input point.  `is_water` is any callable
 // bool(double lat, double lon) — the stateful rasterizer or a frozen view.
+//
+// The seed (lat, lon) is open water (dist 0).  Returning the first land *sample*
+// directly biases the crossing up to a full `step_km` inland of the true
+// waterline; the engine then treats that step-wide band of real coastal land as
+// seaward of the crossing (dist < 0) and marks it never-visible — a thin dead
+// strip along the whole coast.  Once the first land sample brackets the
+// shoreline, bisect the water/land interval down to ~one mask cell and return
+// the land side, so the crossing sits at the waterline (still on land) instead
+// of up to a step inland.
 template <class IsWater>
 OceanOriginResult march_to_coast(double azimuth_deg, double lat, double lon,
                                  double step_km, double max_km,
                                  IsWater&& is_water) {
+    constexpr double kCrossingTolKm = 0.005;  // ≈ 5 m, below the ~10 m mask cell
+    double water = 0.0;  // last distance known to be water (starts at the seed)
     for (double dist = step_km; dist <= max_km; dist += step_km) {
         auto [pt_lat, pt_lon] = geo_destination(lat, lon, azimuth_deg, dist);
-        if (!is_water(pt_lat, pt_lon))
-            return { pt_lat, pt_lon };
+        if (!is_water(pt_lat, pt_lon)) {
+            // Bisect [water, dist] (water → land) toward the shoreline; `hi`
+            // always stays on the land side, so the returned point is on land.
+            double lo = water, hi = dist;
+            while (hi - lo > kCrossingTolKm) {
+                const double mid = 0.5 * (lo + hi);
+                auto [m_lat, m_lon] = geo_destination(lat, lon, azimuth_deg, mid);
+                if (is_water(m_lat, m_lon)) lo = mid; else hi = mid;
+            }
+            auto [c_lat, c_lon] = geo_destination(lat, lon, azimuth_deg, hi);
+            return { c_lat, c_lon };
+        }
+        water = dist;
     }
     return { lat, lon };
 }

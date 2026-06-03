@@ -14,6 +14,10 @@ struct PipelineConfig {
 
     // ── Line-of-sight model (ADR-0008) ──────────────────────────────────
     double horizon_reference_offset_m; ///< seaward offset of the Horizon Reference; d at the coast
+    double coast_obstruction_skip_m;   ///< terrain within this many metres inland of the
+                                       ///< coastline crossing does not raise the running
+                                       ///< max slope (passable foreshore: foredunes/berms
+                                       ///< don't shadow their own lee). 0 = disabled.
 
     // ── Grid ────────────────────────────────────────────────────────────
     double cell_per_degree;            ///< cells per degree (1/3 arc-second = 10800)
