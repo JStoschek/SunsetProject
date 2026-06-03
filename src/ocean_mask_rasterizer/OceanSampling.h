@@ -28,23 +28,6 @@ inline bool sample_water(const uint64_t* bits,
     return (bits[idx / 64] >> (idx % 64)) & 1ULL;
 }
 
-// Spherical-Earth forward formula: destination given start (lat, lon degrees),
-// bearing (degrees clockwise from north), and distance (km).  R = 6371 km.
-inline std::pair<double, double> geo_destination(double lat, double lon,
-                                                 double bearing_deg,
-                                                 double dist_km) {
-    const double R     = 6371.0;
-    const double d     = dist_km / R;
-    const double lat1  = lat         * M_PI / 180.0;
-    const double lon1  = lon         * M_PI / 180.0;
-    const double theta = bearing_deg * M_PI / 180.0;
-
-    const double lat2 = std::asin(std::sin(lat1) * std::cos(d)
-                                  + std::cos(lat1) * std::sin(d) * std::cos(theta));
-    const double lon2 = lon1 + std::atan2(std::sin(theta) * std::sin(d) * std::cos(lat1),
-                                          std::cos(d) - std::sin(lat1) * std::sin(lat2));
-    return { lat2 * 180.0 / M_PI, lon2 * 180.0 / M_PI };
-}
 
 // March along `azimuth_deg` from (lat, lon) until `is_water` first returns false
 // (the coastline crossing) and return that crossing.  If no coast is found
@@ -63,23 +46,50 @@ template <class IsWater>
 OceanOriginResult march_to_coast(double azimuth_deg, double lat, double lon,
                                  double step_km, double max_km,
                                  IsWater&& is_water) {
-    constexpr double kCrossingTolKm = 0.005;  // ≈ 5 m, below the ~10 m mask cell
-    double water = 0.0;  // last distance known to be water (starts at the seed)
+    // March incrementally, advancing latitude/longitude one step at a time and
+    // scaling each longitude increment by the *local* cosine of latitude.  This
+    // makes the path a true flat-earth rhumb line: stepping along it is invariant
+    // to how far back the seed sits, so a far-offshore seed (wide box) reaches the
+    // same crossing as a near seed (narrow box).  Recomputing from the seed each
+    // sample (mean-latitude scaling over the whole span) would reintroduce the
+    // box dependence we are removing.
+    constexpr double R          = 6371.0;
+    const double     km_per_deg = R * M_PI / 180.0;
+    const double     theta      = azimuth_deg * M_PI / 180.0;
+    const double     dlat_step  = (step_km * std::cos(theta)) / km_per_deg;
+    const double     dE_step    = step_km * std::sin(theta) / km_per_deg;  // east (deg·cos)
+
+    // Advance a fraction `frac` of one full step from (la, lo).  Parametrising by
+    // step fraction (not by Δlat) keeps the due-east case (cos θ = 0, dlat_step =
+    // 0) well-defined: latitude simply stays constant while longitude advances.
+    auto step_from = [&](double la, double lo, double frac) {
+        const double la2  = la + frac * dlat_step;
+        const double mean = 0.5 * (la + la2) * M_PI / 180.0;
+        const double lo2  = lo + frac * dE_step / std::cos(mean);
+        return std::pair<double, double>{la2, lo2};
+    };
+
+    const double frac_tol = 0.0001 / step_km;  // ≈ 0.1 m / step, well below a cell
+
+    double c_lat = lat, c_lon = lon;  // running cursor; stays the last water point
     for (double dist = step_km; dist <= max_km; dist += step_km) {
-        auto [pt_lat, pt_lon] = geo_destination(lat, lon, azimuth_deg, dist);
-        if (!is_water(pt_lat, pt_lon)) {
-            // Bisect [water, dist] (water → land) toward the shoreline; `hi`
-            // always stays on the land side, so the returned point is on land.
-            double lo = water, hi = dist;
-            while (hi - lo > kCrossingTolKm) {
-                const double mid = 0.5 * (lo + hi);
-                auto [m_lat, m_lon] = geo_destination(lat, lon, azimuth_deg, mid);
-                if (is_water(m_lat, m_lon)) lo = mid; else hi = mid;
+        auto [n_lat, n_lon] = step_from(c_lat, c_lon, 1.0);
+        if (!is_water(n_lat, n_lon)) {
+            // Bracket found: [c → water, n → land].  Bisect within this single
+            // step (linear in step fraction) toward the shoreline, keeping the
+            // land side so the returned point is on land — at the waterline
+            // rather than up to a full step inland.
+            double lo_f = 0.0;  // fraction of the step from c that is water
+            double hi_f = 1.0;  // fraction of the step from c that is land
+            while (hi_f - lo_f > frac_tol) {
+                const double mid = 0.5 * (lo_f + hi_f);
+                auto [m_lat, m_lon] = step_from(c_lat, c_lon, mid);
+                if (is_water(m_lat, m_lon)) lo_f = mid; else hi_f = mid;
             }
-            auto [c_lat, c_lon] = geo_destination(lat, lon, azimuth_deg, hi);
-            return { c_lat, c_lon };
+            auto [r_lat, r_lon] = step_from(c_lat, c_lon, hi_f);  // land side
+            return { r_lat, r_lon };
         }
-        water = dist;
+        c_lat = n_lat; c_lon = n_lon;
     }
     return { lat, lon };
 }

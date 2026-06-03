@@ -165,6 +165,45 @@ int main() {
         std::puts("PASS: engine-seed NW-sunset crossing is pinned west of Ocean Beach");
     }
 
+    // --- Cycle 10: crossing is invariant to seed distance (box-invariance) -----
+    // The engine seeds every ray at the bounding box's western edge, so the seed
+    // moves offshore as the box widens (the production extent seeds ~57 km out,
+    // a tight diagnostic box ~4 km out).  A spherical great-circle march curves
+    // away from the engine's flat ray by ~d²/2R, an error that grows with the
+    // seed→coast distance: between a near and a far edge the Ocean Beach crossing
+    // drifted ~234 m, pushing it east of the shoreline and silently turning the
+    // beach "not visible" at NW sunset azimuths (~300°).  The flat-earth rhumb
+    // march makes the crossing depend only on the ray and the coastline, so the
+    // same ray reaches the same crossing regardless of how far back it is seeded.
+    {
+        OceanMaskRasterizer omr(GSHHG_FULL_PATH);
+
+        // Far seed in the open Pacific, marching SE (bearing 120°) to Ocean Beach.
+        const auto far_c = omr.ocean_origin_for_ray(120.0, 37.970, -123.0, 0.05, 100.0);
+
+        // Build a NEAR seed only ~3 km offshore on the SAME ray, by stepping back
+        // (reverse bearing) from the far crossing in the flat metric.
+        const double km_per_deg = 6371.0 * kPi / 180.0;
+        const double th         = 120.0 * kPi / 180.0;
+        const double back_km    = 3.0;
+        const double near_lat = far_c.coast_lat - back_km * std::cos(th) / km_per_deg;
+        const double near_lon = far_c.coast_lon
+                              - back_km * std::sin(th)
+                                / (km_per_deg * std::cos(near_lat * kPi / 180.0));
+        const auto near_c = omr.ocean_origin_for_ray(120.0, near_lat, near_lon, 0.05, 100.0);
+
+        // A near seed (~3 km baseline) and a far seed (~57 km baseline) on the
+        // same ray must reach the same crossing.  Tolerance 0.0003° (~33 m) is
+        // far below the ~234 m great-circle drift this guards against, yet well
+        // above the flat march's sub-metre residual.
+        assert(std::abs(near_c.coast_lat - far_c.coast_lat) < 0.0003 &&
+               "coast crossing latitude must be invariant to seed distance");
+        assert(std::abs(near_c.coast_lon - far_c.coast_lon) < 0.0003 &&
+               "coast crossing longitude must be invariant to seed distance");
+
+        std::puts("PASS: coast crossing is invariant to seed distance (box-invariance)");
+    }
+
     std::puts("ALL PASS");
     return 0;
 }
