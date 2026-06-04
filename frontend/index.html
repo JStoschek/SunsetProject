@@ -3,7 +3,12 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Sunset Project</title>
+  <title>Sunset Visibility Map</title>
+
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght,SOFT,WONK@9..144,300..700,0..100,0..1&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet" />
+
   <link href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css" rel="stylesheet" />
   <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
   <!-- Version-pinned SunCalc CDN (mirrors the pinned-MapLibre rationale); attaches global SunCalc. -->
@@ -11,63 +16,264 @@
   <!-- Pure modules (slices 01 & 02); UMD attaches sunsetAzimuth / encodeAzimuth globals. -->
   <script src="sunset_azimuth.js"></script>
   <script src="encode_azimuth.js"></script>
+
   <style>
-    * { margin: 0; padding: 0; box-sizing: border-box; }
-    html, body { width: 100%; height: 100%; }
-    #map { width: 100%; height: 100%; }
-    #cursor-readout {
-      position: fixed;
-      bottom: 10px;
-      left: 10px;
-      background: rgba(0, 0, 0, 0.6);
-      color: #fff;
-      font-family: monospace;
-      font-size: 13px;
-      padding: 4px 8px;
-      border-radius: 3px;
-      pointer-events: none;
-    }
-    #date-controls {
-      position: fixed;
-      top: 10px;
-      left: 10px;
-      background: rgba(0, 0, 0, 0.6);
-      color: #fff;
-      font-family: monospace;
-      font-size: 13px;
-      padding: 6px 8px;
-      border-radius: 3px;
-      display: flex;
-      align-items: center;
-      gap: 6px;
-    }
-    #date-controls input[type="date"] {
-      font-family: monospace;
-      font-size: 13px;
-    }
+  /* ─── design theme (ported verbatim from the Claude-design prototype) ──── */
+  :root{
+    --cream:#f7e3b4;
+    --dusk:#7d1c1f;
+    --amber:#f0a363;
+    --ink:#1a1008;
+    --paper:#faf6ee;
+    --accent:#7d1c1f;
+    --fr-soft:60;
+    --fr-wonk:1;
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;height:100%;overflow:hidden;background:var(--ink);}
+  body{font-family:'Space Mono',ui-monospace,monospace;}
+
+  .serif{
+    font-family:'Fraunces',Georgia,serif;
+    font-optical-sizing:auto;
+    font-variation-settings:'SOFT' var(--fr-soft),'WONK' var(--fr-wonk);
+  }
+
+  /* map + atmosphere */
+  #map{position:fixed;inset:0;}
+  .maplibregl-map{background:#e9e2d4;font:inherit;}
+  #dusk{position:fixed;inset:0;pointer-events:none;z-index:1;mix-blend-mode:multiply;
+    background:
+      radial-gradient(120% 85% at 50% 122%, rgba(240,163,99,.12) 0%, rgba(240,163,99,.03) 42%, transparent 62%),
+      linear-gradient(180deg, rgba(125,28,31,.05) 0%, transparent 26%);
+    box-shadow:inset 0 0 280px 60px rgba(26,16,8,.13);}
+  #glow{position:fixed;inset:0;pointer-events:none;z-index:2;
+    background:
+      radial-gradient(95% 55% at 50% 124%, rgba(247,227,180,.11) 0%, transparent 56%),
+      radial-gradient(120% 70% at 50% -12%, rgba(247,227,180,.05) 0%, transparent 50%);}
+
+  /* locked-location marker */
+  .sun-marker{position:relative;width:18px;height:18px;transition:opacity .35s ease;
+    pointer-events:none;}
+  .sm-core{position:absolute;inset:5px;border-radius:50%;background:var(--amber);
+    box-shadow:0 0 0 2px rgba(26,16,8,.55),0 0 16px 3px rgba(240,163,99,.8);}
+  .sm-ring{position:absolute;inset:0;border-radius:50%;border:1.5px solid var(--amber);
+    animation:sunPulse 2.4s cubic-bezier(.4,0,.2,1) infinite;}
+  @keyframes sunPulse{
+    0%{transform:scale(.7);opacity:.9;}
+    70%{transform:scale(2.1);opacity:0;}
+    100%{opacity:0;}
+  }
+
+  /* ═══ Lat/Lon card + Extra Info panel ═══════════════════════════════════ */
+  .info-card{position:fixed;left:22px;bottom:22px;z-index:10;display:flex;flex-direction:column;
+    align-items:flex-start;gap:10px;max-width:min(380px,calc(100vw - 44px));}
+
+  .ll-pill{display:flex;align-items:center;gap:14px;cursor:pointer;
+    padding:11px 16px 11px 13px;border:none;border-radius:15px;
+    background:var(--ink);color:var(--cream);
+    font-family:'Space Mono',monospace;text-align:left;
+    box-shadow:0 10px 30px -10px rgba(26,16,8,.6),0 1px 0 rgba(247,227,180,.12) inset;
+    transition:transform .3s cubic-bezier(.34,1.56,.64,1),box-shadow .3s ease;}
+  .ll-pill:hover{transform:translateY(-2px);
+    box-shadow:0 16px 36px -12px rgba(26,16,8,.7),0 1px 0 rgba(247,227,180,.18) inset;}
+
+  .ll-chev{display:flex;color:var(--amber);transition:transform .35s cubic-bezier(.34,1.56,.64,1);}
+  .info-card[data-open="1"] .ll-chev{transform:rotate(180deg);}
+  .ll-coord{display:flex;flex-direction:column;gap:1px;line-height:1;}
+  .ll-tag{font-size:9px;letter-spacing:.14em;color:var(--amber);font-weight:600;
+    text-transform:uppercase;}
+  .ll-num{font-size:13.5px;letter-spacing:.01em;color:var(--cream);
+    font-variant-numeric:tabular-nums;}
+  .ll-div{width:1px;align-self:stretch;background:rgba(247,227,180,.18);margin:1px 0;}
+
+  /* panel reveal — spring */
+  .info-panel{width:300px;max-width:100%;transform-origin:bottom left;
+    background:var(--ink);color:var(--cream);border-radius:18px;overflow:hidden;
+    box-shadow:0 18px 50px -14px rgba(26,16,8,.7),0 1px 0 rgba(247,227,180,.12) inset;
+    opacity:0;max-height:0;transform:translateY(14px) scale(.95);pointer-events:none;
+    transition:opacity .26s ease,max-height .38s cubic-bezier(.34,1.5,.5,1),
+      transform .42s cubic-bezier(.34,1.56,.64,1),overflow 0s linear .42s;}
+  .info-card[data-open="1"] .info-panel{opacity:1;max-height:360px;
+    transform:none;pointer-events:auto;overflow:visible;
+    transition:opacity .26s ease,max-height .38s cubic-bezier(.34,1.5,.5,1),
+      transform .42s cubic-bezier(.34,1.56,.64,1),overflow 0s linear .42s;}
+
+  .info-panel-head{display:flex;flex-direction:column;align-items:flex-start;gap:3px;
+    padding:15px 18px 11px;border-bottom:1px solid rgba(247,227,180,.12);}
+  .ip-title{font-size:17px;font-weight:600;color:var(--cream);letter-spacing:.005em;}
+  .ip-coords{font-size:9.5px;color:rgba(247,227,180,.55);letter-spacing:.02em;
+    font-variant-numeric:tabular-nums;white-space:nowrap;}
+
+  .info-fields{padding:6px 8px 10px;}
+  .layout-grid .info-fields{display:grid;grid-template-columns:1fr 1fr;gap:2px;}
+  .info-field{position:relative;padding:11px 10px;border-radius:11px;
+    display:flex;flex-direction:column;gap:4px;cursor:default;outline:none;
+    transition:background .2s ease;}
+  .info-field:hover,.info-field:focus-visible{background:rgba(247,227,180,.07);}
+  .if-label{font-size:11.5px;font-weight:500;letter-spacing:.04em;text-transform:uppercase;
+    color:rgba(247,227,180,.62);}
+  .if-value{font-size:18px;color:var(--cream);letter-spacing:.005em;font-weight:700;
+    font-variant-numeric:tabular-nums;}
+  .layout-grid .if-value{font-size:16px;}
+  /* visibility verdict accents */
+  .info-field[data-verdict="visible"] .if-value{color:var(--amber);}
+  .info-field[data-verdict="blocked"] .if-value{color:rgba(247,227,180,.5);}
+
+  /* tooltips — cream bubble, fade + drift (grid: above the field) */
+  .if-tip{position:absolute;z-index:20;width:200px;
+    background:var(--cream);color:var(--ink);
+    font-family:'Space Mono',monospace;font-size:11px;line-height:1.5;
+    padding:11px 13px;border-radius:13px;
+    box-shadow:0 14px 34px -10px rgba(26,16,8,.55);
+    opacity:0;pointer-events:none;
+    bottom:calc(100% + 12px);left:50%;margin-left:-100px;
+    transform:translateY(8px);
+    transition:opacity .22s ease,transform .28s cubic-bezier(.34,1.5,.5,1);}
+  .if-tip-term{display:block;font-size:12px;font-weight:600;margin-bottom:3px;
+    color:var(--dusk);letter-spacing:.005em;}
+  .info-field:hover .if-tip,.info-field:focus-visible .if-tip{
+    opacity:1;transform:translateY(0);}
+  .if-tip::after{content:"";position:absolute;top:100%;left:50%;
+    transform:translateX(-50%);border:7px solid transparent;border-top-color:var(--cream);}
+
+  /* ═══ Date picker + calendar ════════════════════════════════════════════ */
+  .date-card{position:fixed;top:22px;left:50%;transform:translateX(-50%);z-index:10;
+    display:flex;flex-direction:column;align-items:center;gap:11px;}
+
+  .date-pill{display:flex;align-items:center;gap:16px;cursor:pointer;
+    padding:10px 16px 10px 20px;border:none;border-radius:16px;
+    background:var(--paper);color:var(--ink);
+    box-shadow:0 12px 32px -12px rgba(26,16,8,.5),0 0 0 .5px rgba(26,16,8,.06);
+    transition:transform .3s cubic-bezier(.34,1.56,.64,1),box-shadow .3s ease;}
+  .date-pill:hover{transform:translateY(-2px);
+    box-shadow:0 18px 40px -14px rgba(26,16,8,.6),0 0 0 .5px rgba(26,16,8,.08);}
+  .dp-text{display:flex;flex-direction:column;align-items:flex-start;gap:1px;line-height:1;
+    white-space:nowrap;}
+  .dp-weekday{font-family:'Space Mono',monospace;font-size:9px;letter-spacing:.16em;
+    color:var(--dusk);font-weight:700;}
+  .dp-main{font-family:'Space Mono',ui-monospace,monospace;font-size:18.5px;font-weight:700;
+    color:var(--ink);line-height:1.1;letter-spacing:-.01em;white-space:nowrap;}
+  .dp-year{font-family:'Space Mono',monospace;font-size:13px;color:rgba(26,16,8,.5);
+    font-variant-numeric:tabular-nums;align-self:flex-end;padding-bottom:2px;}
+  .dp-chev{display:flex;color:rgba(26,16,8,.4);
+    transition:transform .35s cubic-bezier(.34,1.56,.64,1);}
+  .date-card[data-open="1"] .dp-chev{transform:rotate(180deg);}
+
+  /* calendar drop */
+  .cal{width:312px;background:var(--paper);border-radius:20px;overflow:hidden;
+    box-shadow:0 22px 56px -16px rgba(26,16,8,.55),0 0 0 .5px rgba(26,16,8,.06);
+    transform-origin:top center;
+    opacity:0;max-height:0;transform:translateY(-10px) scale(.96);pointer-events:none;
+    transition:opacity .24s ease,max-height .4s cubic-bezier(.34,1.4,.5,1),
+      transform .4s cubic-bezier(.34,1.56,.64,1);}
+  .date-card[data-open="1"] .cal{opacity:1;max-height:430px;transform:none;pointer-events:auto;}
+
+  .cal-head{display:flex;align-items:center;justify-content:space-between;
+    padding:16px 18px 10px;}
+  .cal-title{font-size:21px;font-weight:600;color:var(--ink);letter-spacing:.005em;white-space:nowrap;}
+  .cal-year{color:rgba(26,16,8,.42);font-weight:400;}
+  .cal-nav{width:30px;height:30px;display:flex;align-items:center;justify-content:center;
+    border:none;border-radius:9px;background:transparent;color:rgba(26,16,8,.55);
+    cursor:pointer;transition:background .18s ease,color .18s ease;}
+  .cal-nav:hover{background:rgba(26,16,8,.07);color:var(--ink);}
+  .rot-l{transform:rotate(-90deg);}
+  .rot-r{transform:rotate(90deg);}
+
+  .cal-week{display:grid;grid-template-columns:repeat(7,1fr);padding:0 14px 4px;}
+  .cal-week span{text-align:center;font-family:'Space Mono',monospace;font-size:10px;
+    font-weight:700;letter-spacing:.06em;color:rgba(26,16,8,.4);padding:4px 0;}
+
+  .cal-grid-wrap{padding:2px 14px 16px;perspective:1100px;}
+  .cal-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:2px;transform-origin:center;}
+  .cal-grid[data-dir="1"]{animation:pageNext .44s cubic-bezier(.2,.7,.3,1);}
+  .cal-grid[data-dir="-1"]{animation:pagePrev .44s cubic-bezier(.2,.7,.3,1);}
+  @keyframes pageNext{
+    0%{opacity:0;transform:translateX(30px) rotateY(-18deg);}
+    100%{opacity:1;transform:none;}
+  }
+  @keyframes pagePrev{
+    0%{opacity:0;transform:translateX(-30px) rotateY(18deg);}
+    100%{opacity:1;transform:none;}
+  }
+  .cal-empty{aspect-ratio:1;}
+  .cal-day{aspect-ratio:1;display:flex;align-items:center;justify-content:center;
+    border:none;border-radius:10px;background:transparent;cursor:pointer;
+    font-family:'Space Mono',monospace;font-size:13.5px;color:var(--ink);
+    position:relative;transition:background .16s ease,color .16s ease;
+    font-variant-numeric:tabular-nums;}
+  .cal-day:hover{background:rgba(26,16,8,.07);}
+  .cal-day[data-today="1"]::after{content:"";position:absolute;bottom:6px;left:50%;
+    transform:translateX(-50%);width:4px;height:4px;border-radius:50%;background:var(--dusk);}
+  .cal-day[data-selected="1"]{background:var(--accent);color:var(--cream);font-weight:700;
+    animation:dayGlow 2.6s ease-in-out infinite;}
+  .cal-day[data-selected="1"]:hover{background:var(--accent);}
+  .cal-day[data-selected="1"][data-today="1"]::after{background:var(--cream);}
+  @keyframes dayGlow{
+    0%,100%{box-shadow:0 0 0 0 color-mix(in srgb,var(--accent) 55%,transparent);}
+    50%{box-shadow:0 0 0 6px color-mix(in srgb,var(--accent) 0%,transparent),
+      0 0 16px 1px color-mix(in srgb,var(--accent) 45%,transparent);}
+  }
+
+  @media (prefers-reduced-motion:reduce){
+    *{animation-duration:.001ms!important;transition-duration:.08s!important;}
+  }
   </style>
 </head>
 <body>
   <div id="map"></div>
-  <div id="date-controls">
-    <label for="date-input">Sunset date</label>
-    <input type="date" id="date-input" />
+  <div id="dusk"></div>
+  <div id="glow"></div>
+
+  <!-- Lat/Lon pill → Selected Observer info panel -->
+  <div class="info-card" id="info-card" data-open="0">
+    <div class="info-panel layout-grid" id="info-panel" aria-hidden="true">
+      <div class="info-panel-head">
+        <span class="ip-title serif">Sunset here</span>
+        <span class="ip-coords" id="ip-coords">—</span>
+      </div>
+      <div class="info-fields" id="info-fields"></div>
+    </div>
+    <button class="ll-pill" id="ll-pill" aria-expanded="false" aria-label="Toggle sunset details">
+      <span class="ll-chev" id="ll-chev"></span>
+      <span class="ll-coord">
+        <span class="ll-tag serif">LAT</span>
+        <span class="ll-num" id="ll-lat">—</span>
+      </span>
+      <span class="ll-div"></span>
+      <span class="ll-coord">
+        <span class="ll-tag serif">LON</span>
+        <span class="ll-num" id="ll-lon">—</span>
+      </span>
+    </button>
   </div>
-  <div id="cursor-readout">—</div>
+
+  <!-- Date pill → calendar -->
+  <div class="date-card" id="date-card" data-open="0">
+    <button class="date-pill" id="date-pill" aria-expanded="false">
+      <span class="dp-text">
+        <span class="dp-weekday" id="dp-weekday"></span>
+        <span class="dp-main" id="dp-main"></span>
+      </span>
+      <span class="dp-year" id="dp-year"></span>
+      <span class="dp-chev" id="dp-chev"></span>
+    </button>
+    <div class="cal" id="cal" aria-hidden="true"></div>
+  </div>
+
   <script>
-    // --- Date helpers ------------------------------------------------------
-    // Local "today" as YYYY-MM-DD, derived from local calendar components.
-    // Never toISOString(): that yields the UTC date and can be a day ahead for
+    // ═══ Visibility tile rendering (unchanged from the MapLibre app) ════════
+    // Local "today" as YYYY-MM-DD, from local calendar components. Never
+    // toISOString(): that yields the UTC date and can be a day ahead for
     // evening West Coast users.
-    function localTodayValue() {
-      const now = new Date();
-      const y = now.getFullYear();
-      const m = String(now.getMonth() + 1).padStart(2, '0');
-      const d = String(now.getDate()).padStart(2, '0');
-      return `${y}-${m}-${d}`;
+    function dateToValue(d) {
+      const y = d.getFullYear();
+      const m = String(d.getMonth() + 1).padStart(2, '0');
+      const day = String(d.getDate()).padStart(2, '0');
+      return `${y}-${m}-${day}`;
     }
 
-    // Parse a YYYY-MM-DD input value into integer components (no Date/timezone
+    // Parse a YYYY-MM-DD value into integer components (no Date/timezone
     // round-trip), compute the Sunset Azimuth (slice 01) and encode it (slice 02).
     function encodedAzForDate(dateValue, lat) {
       const [y, m, d] = dateValue.split('-').map(Number);
@@ -75,15 +281,11 @@
       return encodeAzimuth(compassAz);
     }
 
-    // Default azimuth byte, computed synchronously from the default date and the
-    // map's initial center latitude, so the very first tile colorize is correct
-    // before any event fires.
     const INITIAL_CENTER = [-122.5, 37.85];
-    const DEFAULT_DATE = localTodayValue();
-    let currentEncodedAz = encodedAzForDate(DEFAULT_DATE, INITIAL_CENTER[1]);
+    let currentDate = new Date();                 // the Selected date (local today)
+    let currentEncodedAz = encodedAzForDate(dateToValue(currentDate), INITIAL_CENTER[1]);
 
-    // Transparent 1×1 PNG returned for tiles that do not exist in the pyramid
-    // (ocean tiles skipped during generation, outside data bounds, etc.)
+    // Transparent 1×1 PNG for tiles that do not exist in the pyramid.
     const EMPTY_TILE = (() => {
       const b64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=';
       const bin = atob(b64);
@@ -96,7 +298,6 @@
     const rawCache = new Map();
 
     // Pure threshold step: map raw R/G/A channels + encoded azimuth byte to display RGBA.
-    // No network access; can be re-run against a new encodedAz without re-fetching.
     function applyThreshold(raw, width, height, encodedAz) {
       const out = new Uint8ClampedArray(width * height * 4);
       for (let i = 0; i < width * height; i++) {
@@ -104,12 +305,12 @@
         const g = raw[i * 3 + 1];
         const a = raw[i * 3 + 2];
         const j = i * 4;
-        if (a === 0) { // ocean / DEM no-data: leave transparent
+        if (a === 0) {                       // ocean / DEM no-data: leave transparent
           continue;
         } else if (r <= encodedAz && g >= encodedAz) {
           out[j] = 255; out[j + 1] = 255; out[j + 2] = 255; out[j + 3] = 255;
         } else {
-          out[j + 3] = 255; // black (R/G/B default to 0)
+          out[j + 3] = 255;                  // black
         }
       }
       return out;
@@ -118,17 +319,10 @@
     // Custom protocol: fetch raw visibility tiles, cache R/G/A channels on first fetch,
     // then apply the threshold step to emit white / black / transparent per pixel.
     maplibregl.addProtocol('visibility', async (params) => {
-      // Strip the recolor cache-bust query (?v=N): it forces MapLibre to treat the
-      // tile as new and re-run this handler, but the underlying fetch URL and the
-      // rawCache key stay stable so a re-colorize never re-fetches.
       const tileUrl = params.url.replace('visibility://', '').split('?')[0];
 
       let cached = rawCache.get(tileUrl);
       if (!cached) {
-        // Revalidate against the tile server (conditional GET): a cheap 304 when
-        // the tile is unchanged, but fresh bytes after the pyramid is rebuilt.
-        // Without this the browser's heuristic HTTP cache keeps serving stale
-        // tiles, so a regenerated pyramid renders all-black until the cache ages out.
         const r = await fetch(tileUrl, { cache: 'no-cache' });
         if (!r.ok) return { data: EMPTY_TILE };
 
@@ -141,12 +335,14 @@
 
         const raw = new Uint8Array(bitmap.width * bitmap.height * 3);
         for (let i = 0; i < bitmap.width * bitmap.height; i++) {
-          raw[i * 3]     = src[i * 4];     // R (encoded min_az)
-          raw[i * 3 + 1] = src[i * 4 + 1]; // G (encoded max_az)
-          raw[i * 3 + 2] = src[i * 4 + 3]; // A (255 = land, 0 = ocean/no-data)
+          raw[i * 3]     = src[i * 4];       // R (encoded min_az)
+          raw[i * 3 + 1] = src[i * 4 + 1];   // G (encoded max_az)
+          raw[i * 3 + 2] = src[i * 4 + 3];   // A (255 = land, 0 = ocean/no-data)
         }
         cached = { width: bitmap.width, height: bitmap.height, raw };
         rawCache.set(tileUrl, cached);
+        // A freshly-loaded tile may now cover the open Observer — refresh verdict.
+        if (infoOpen) renderPanel();
       }
 
       const { width, height, raw } = cached;
@@ -195,44 +391,345 @@
       },
       center: INITIAL_CENTER,
       zoom: 11,
+      attributionControl: { compact: true },   // collapse to the (i) button by default
     });
 
     // --- Recolorization Controller ----------------------------------------
-    // Owns the current encoded azimuth. applyAzimuth(encoded) re-thresholds the
-    // already-cached raw channels by forcing MapLibre to re-run the visibility
-    // protocol, issuing no network request. Skips when the byte is unchanged.
     let recolorVersion = 0;
     function applyAzimuth(encoded) {
-      if (encoded === currentEncodedAz) return; // no change → no rework, no fetch
+      if (encoded === currentEncodedAz) return;     // no change → no rework, no fetch
       currentEncodedAz = encoded;
       const source = map.getSource('visibility');
       if (!source) return;
-      // Cache-bust the tile template so MapLibre invalidates its rendered-tile
-      // cache and re-runs the protocol; the protocol strips ?v and reads raw
-      // channels from rawCache, so no tile is re-fetched.
       recolorVersion++;
       source.setTiles([`visibility://tiles/{z}/{x}/{y}.png?v=${recolorVersion}`]);
     }
 
-    // Recompute the Sunset Azimuth from the current date input and map center.
+    // Recompute the Sunset Azimuth from the Selected date and the map center.
     function recolorizeFromInputs() {
-      applyAzimuth(encodedAzForDate(dateInput.value, map.getCenter().lat));
+      applyAzimuth(encodedAzForDate(dateToValue(currentDate), map.getCenter().lat));
     }
 
-    // --- Date input --------------------------------------------------------
-    const dateInput = document.getElementById('date-input');
-    dateInput.value = DEFAULT_DATE; // local today; unbounded (no min/max)
-    dateInput.addEventListener('input', recolorizeFromInputs);
+    // ═══ Visibility verdict sampling (Selected Observer → cached tile) ══════
+    // Map a lng/lat to global Web-Mercator tile coordinates at zoom z.
+    function lngToTileX(lng, z) { return ((lng + 180) / 360) * (2 ** z); }
+    function latToTileY(lat, z) {
+      const s = Math.sin((lat * Math.PI) / 180);
+      return (0.5 - Math.log((1 + s) / (1 - s)) / (4 * Math.PI)) * (2 ** z);
+    }
 
-    // Initial trigger: once after both map load and the default date are set.
-    map.on('load', recolorizeFromInputs);
-    map.on('moveend', recolorizeFromInputs);
+    // Read the encoded R/G/A at a coordinate from whatever visibility tile is
+    // already cached, preferring the highest-resolution (largest z) hit. The
+    // cache holds exactly the tiles MapLibre rendered, so we never have to guess
+    // the source-vs-map zoom offset — we just probe the z levels we actually have.
+    function sampleVisibility(lat, lng) {
+      const zs = new Set();
+      for (const url of rawCache.keys()) {
+        const m = url.match(/tiles\/(\d+)\//);
+        if (m) zs.add(Number(m[1]));
+      }
+      for (const z of [...zs].sort((a, b) => b - a)) {
+        const gx = lngToTileX(lng, z);
+        const gy = latToTileY(lat, z);
+        const x = Math.floor(gx), y = Math.floor(gy);
+        const tile = rawCache.get(`tiles/${z}/${x}/${y}.png`);
+        if (!tile) continue;
+        const px = Math.min(tile.width - 1, Math.floor((gx - x) * tile.width));
+        const py = Math.min(tile.height - 1, Math.floor((gy - y) * tile.height));
+        const idx = (py * tile.width + px) * 3;
+        return { r: tile.raw[idx], g: tile.raw[idx + 1], a: tile.raw[idx + 2] };
+      }
+      return null;
+    }
 
-    const readout = document.getElementById('cursor-readout');
-    map.on('mousemove', (e) => {
-      const { lat, lng } = e.lngLat;
-      readout.textContent = `${lat.toFixed(4)}, ${lng.toFixed(4)}`;
+    // 'Visible' / 'Blocked' for a valid land pixel (A=255); null otherwise — the
+    // tile collapses ocean / never-visible / no-data into A=0 (ADR-0003), so we
+    // only assert a verdict where the data is unambiguous.
+    function visibilityVerdict(lat, lng) {
+      const s = sampleVisibility(lat, lng);
+      if (!s || s.a !== 255) return null;
+      const encoded = encodedAzForDate(dateToValue(currentDate), lat);
+      return s.r <= encoded && s.g >= encoded ? 'Visible' : 'Blocked';
+    }
+
+    // ═══ Sun almanac helpers (SunCalc; azimuth from the project module) ═════
+    const SUN_TZ = 'America/Los_Angeles';
+    function fmtTime(d) {
+      if (!d || isNaN(d.getTime())) return '—';
+      return new Intl.DateTimeFormat('en-US', {
+        hour: 'numeric', minute: '2-digit', timeZone: SUN_TZ,
+      }).format(d);
+    }
+    function fmtDuration(ms) {
+      if (!isFinite(ms) || ms <= 0) return '—';
+      const h = Math.floor(ms / 3600000);
+      const m = Math.round((ms % 3600000) / 60000);
+      return `${h}h ${String(m).padStart(2, '0')}m`;
+    }
+    const COMPASS = ['N','NNE','NE','ENE','E','ESE','SE','SSE','S','SSW','SW','WSW','W','WNW','NW','NNW'];
+    function compass(deg) { return COMPASS[Math.round(deg / 22.5) % 16]; }
+    function fmtLat(lat) { return `${Math.abs(lat).toFixed(4)}° ${lat >= 0 ? 'N' : 'S'}`; }
+    function fmtLon(lon) { return `${Math.abs(lon).toFixed(4)}° ${lon >= 0 ? 'E' : 'W'}`; }
+
+    function computeSun(date, lat, lng) {
+      const times = SunCalc.getTimes(date, lat, lng);
+      const sunset = times.sunset, sunrise = times.sunrise, noon = times.solarNoon;
+      // Azimuth from the project's own module — the one that drives the overlay
+      // encoding — so the number shown matches the visibility verdict.
+      const az = sunsetAzimuth(date.getFullYear(), date.getMonth() + 1, date.getDate(), lat);
+      return {
+        culmination: fmtTime(noon),
+        sunset: fmtTime(sunset),
+        daylight: fmtDuration(sunset - sunrise),
+        azimuth: isFinite(az) ? `${Math.round(az)}° ${compass(az)}` : '—',
+      };
+    }
+
+    const FIELD_INFO = {
+      visibility: "Whether this observer can see the sun touch the Pacific Ocean horizon on the selected date — an unobstructed line of sight west along the sunset azimuth. 'Blocked' means terrain hides it.",
+      culmination: 'Solar noon — the instant the sun reaches its highest point in the sky. It sits exactly halfway between sunrise and sunset.',
+      sunset: 'The clock time the sun reaches the geometric horizon (from SunCalc). This is an astronomical time only — it does not mean the sunset is actually visible from here.',
+      daylight: 'Total time the sun spends above the horizon today, measured from sunrise to sunset.',
+      azimuth: 'The compass bearing of the sun as it sets, measured clockwise from true north — exactly where on the horizon it drops.',
+    };
+
+    // ═══ Floating-chrome state + rendering (vanilla) ════════════════════════
+    const CHEVRON = (cls = '') =>
+      `<svg class="${cls}" viewBox="0 0 16 16" width="13" height="13" aria-hidden="true">` +
+      `<path d="M3.5 10.5 8 6l4.5 4.5" fill="none" stroke="currentColor" stroke-width="1.8" ` +
+      `stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+
+    const WEEKDAYS = ['S', 'M', 'T', 'W', 'T', 'F', 'S'];
+    const MONTHS = ['January','February','March','April','May','June','July',
+      'August','September','October','November','December'];
+    function sameDay(a, b) {
+      return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth()
+        && a.getDate() === b.getDate();
+    }
+
+    let cursor = { lat: INITIAL_CENTER[1], lng: INITIAL_CENTER[0] };
+    let infoOpen = false;
+    let saved = null;                                   // Selected Observer { lat, lng } | null
+    let calOpen = false;
+    let calView = { y: currentDate.getFullYear(), m: currentDate.getMonth() };
+    let calDir = 0;
+
+    const infoCard  = document.getElementById('info-card');
+    const infoPanel = document.getElementById('info-panel');
+    const infoFields = document.getElementById('info-fields');
+    const ipCoords  = document.getElementById('ip-coords');
+    const llPill    = document.getElementById('ll-pill');
+    const llLat     = document.getElementById('ll-lat');
+    const llLon     = document.getElementById('ll-lon');
+    document.getElementById('ll-chev').innerHTML = CHEVRON();
+    document.getElementById('dp-chev').innerHTML = CHEVRON();
+
+    const dateCard  = document.getElementById('date-card');
+    const datePill  = document.getElementById('date-pill');
+    const dpWeekday = document.getElementById('dp-weekday');
+    const dpMain    = document.getElementById('dp-main');
+    const dpYear    = document.getElementById('dp-year');
+    const calEl     = document.getElementById('cal');
+
+    // sun marker (MapLibre marker reusing the design's pulsing element)
+    const markerEl = document.createElement('div');
+    markerEl.className = 'sun-marker';
+    markerEl.innerHTML = '<span class="sm-core"></span><span class="sm-ring"></span>';
+    // Added to the map only while a point is selected — MapLibre's Marker resets
+    // the element's inline opacity on every update, so add/remove (not opacity)
+    // is what reliably keeps the ping hidden until a click.
+    const marker = new maplibregl.Marker({ element: markerEl, anchor: 'center' });
+    let markerOnMap = false;
+
+    function renderPillCoords() {
+      const p = infoOpen && saved ? saved : cursor;
+      llLat.textContent = fmtLat(p.lat);
+      llLon.textContent = fmtLon(p.lng);
+    }
+
+    function renderPanel() {
+      if (!saved) return;
+      ipCoords.textContent = `${fmtLat(saved.lat)} · ${fmtLon(saved.lng)}`;
+      const sun = computeSun(currentDate, saved.lat, saved.lng);
+      const verdict = visibilityVerdict(saved.lat, saved.lng);
+
+      const fields = [];
+      if (verdict) fields.push(['Visibility', verdict, 'visibility', verdict.toLowerCase()]);
+      fields.push(['Culmination', sun.culmination, 'culmination']);
+      fields.push(['Sunset', sun.sunset, 'sunset']);
+      fields.push(['Daylight', sun.daylight, 'daylight']);
+      fields.push(['Azimuth', sun.azimuth, 'azimuth']);
+
+      infoFields.innerHTML = fields.map(([label, value, key, verdictClass]) => `
+        <div class="info-field" tabindex="0"${verdictClass ? ` data-verdict="${verdictClass}"` : ''}>
+          <span class="if-label serif">${label}</span>
+          <span class="if-value">${value}</span>
+          <div class="if-tip"><span class="if-tip-term serif">${label}</span>${FIELD_INFO[key]}</div>
+        </div>`).join('');
+    }
+
+    function updateMarker() {
+      if (infoOpen && saved) {
+        marker.setLngLat([saved.lng, saved.lat]);   // moves on each new selection
+        if (!markerOnMap) { marker.addTo(map); markerOnMap = true; }
+      } else if (markerOnMap) {
+        marker.remove();                             // gone once the tab closes
+        markerOnMap = false;
+      }
+    }
+
+    function openInfoAt(pt) {
+      saved = { lat: pt.lat, lng: pt.lng };
+      infoOpen = true;
+      infoCard.dataset.open = '1';
+      llPill.setAttribute('aria-expanded', 'true');
+      infoPanel.setAttribute('aria-hidden', 'false');
+      renderPanel();
+      renderPillCoords();
+      updateMarker();
+    }
+    function closeInfo() {
+      infoOpen = false;
+      saved = null;                                     // temp save discarded on close
+      infoCard.dataset.open = '0';
+      llPill.setAttribute('aria-expanded', 'false');
+      infoPanel.setAttribute('aria-hidden', 'true');
+      updateMarker();
+      renderPillCoords();
+    }
+
+    llPill.addEventListener('click', () => {
+      if (infoOpen) closeInfo();
+      else openInfoAt(cursor);
     });
+
+    // --- Date picker ------------------------------------------------------
+    function renderDatePill() {
+      dpWeekday.textContent = new Intl.DateTimeFormat('en-US', { weekday: 'long' })
+        .format(currentDate).toUpperCase();
+      dpMain.textContent = new Intl.DateTimeFormat('en-US', { month: 'long', day: 'numeric' })
+        .format(currentDate);
+      dpYear.textContent = currentDate.getFullYear();
+    }
+
+    function renderCal() {
+      const { y, m } = calView;
+      const first = new Date(y, m, 1).getDay();
+      const days = new Date(y, m + 1, 0).getDate();
+      const today = new Date();
+      let cells = '';
+      for (let i = 0; i < first; i++) cells += '<span class="cal-empty"></span>';
+      for (let d = 1; d <= days; d++) {
+        const cellDate = new Date(y, m, d);
+        const isSel = sameDay(cellDate, currentDate);
+        const isToday = sameDay(cellDate, today);
+        cells += `<button class="cal-day" data-d="${d}" ` +
+          `data-selected="${isSel ? '1' : '0'}" data-today="${isToday ? '1' : '0'}">${d}</button>`;
+      }
+      calEl.innerHTML = `
+        <div class="cal-head">
+          <button class="cal-nav" data-nav="-1" aria-label="Previous month">${CHEVRON('rot-l')}</button>
+          <div class="cal-title">${MONTHS[m]} <span class="cal-year">${y}</span></div>
+          <button class="cal-nav" data-nav="1" aria-label="Next month">${CHEVRON('rot-r')}</button>
+        </div>
+        <div class="cal-week">${WEEKDAYS.map((d) => `<span>${d}</span>`).join('')}</div>
+        <div class="cal-grid-wrap">
+          <div class="cal-grid" data-dir="${calDir}">${cells}</div>
+        </div>`;
+      calDir = 0;
+    }
+
+    function openCal() {
+      calOpen = true;
+      calView = { y: currentDate.getFullYear(), m: currentDate.getMonth() };
+      renderCal();
+      dateCard.dataset.open = '1';
+      datePill.setAttribute('aria-expanded', 'true');
+      calEl.setAttribute('aria-hidden', 'false');
+    }
+    function closeCal() {
+      calOpen = false;
+      dateCard.dataset.open = '0';
+      datePill.setAttribute('aria-expanded', 'false');
+      calEl.setAttribute('aria-hidden', 'true');
+    }
+
+    function selectDate(d) {
+      currentDate = d;
+      renderDatePill();
+      recolorizeFromInputs();           // re-colorize the overlay for the new azimuth
+      if (infoOpen) renderPanel();      // verdict + almanac depend on the date
+      closeCal();
+    }
+
+    datePill.addEventListener('click', () => { calOpen ? closeCal() : openCal(); });
+
+    calEl.addEventListener('click', (e) => {
+      const nav = e.target.closest('.cal-nav');
+      if (nav) {
+        const n = Number(nav.dataset.nav);
+        calDir = n;
+        let mo = calView.m + n, yr = calView.y;
+        if (mo < 0) { mo = 11; yr--; }
+        if (mo > 11) { mo = 0; yr++; }
+        calView = { y: yr, m: mo };
+        renderCal();
+        return;
+      }
+      const day = e.target.closest('.cal-day');
+      if (day) selectDate(new Date(calView.y, calView.m, Number(day.dataset.d)));
+    });
+
+    // outside-click closes the calendar (the info panel closes only via pill/Esc)
+    document.addEventListener('mousedown', (e) => {
+      if (calOpen && !e.target.closest('.date-card')) closeCal();
+    });
+    document.addEventListener('keydown', (e) => {
+      if (e.key !== 'Escape') return;
+      if (calOpen) closeCal();
+      else if (infoOpen) closeInfo();
+    });
+
+    // --- Map wiring -------------------------------------------------------
+    let rafPending = null, raf = 0;
+    map.on('mousemove', (e) => {
+      rafPending = { lat: e.lngLat.lat, lng: e.lngLat.lng };
+      if (!raf) {
+        raf = requestAnimationFrame(() => {
+          raf = 0;
+          cursor = rafPending;
+          if (!infoOpen) renderPillCoords();
+        });
+      }
+    });
+
+    // Click selects a location: open the panel + save the Selected Observer
+    // there (or move it if already open).
+    map.on('click', (e) => openInfoAt({ lat: e.lngLat.lat, lng: e.lngLat.lng }));
+
+    map.on('load', () => {
+      map.resize();                     // re-measure: the container may not have
+      recolorizeFromInputs();           // had its final size at construction time
+    });
+    // compact:true still re-expands on every attribution repopulate in MapLibre 4.x.
+    // Keep it collapsed to the (i) button by stripping the show-class on each data/
+    // idle event (these fire throughout load), but never while the user is hovering
+    // it open to read the credits — so clicking the (i) on a settled map still works.
+    const collapseAttrib = () => {
+      const a = map.getContainer().querySelector('.maplibregl-ctrl-attrib');
+      if (a && !a.matches(':hover')) a.classList.remove('maplibregl-compact-show');
+    };
+    map.on('data', collapseAttrib);
+    map.on('idle', collapseAttrib);
+    setTimeout(() => map.resize(), 200); // fallback for late layout/font settling
+    map.on('moveend', () => {
+      recolorizeFromInputs();
+      if (infoOpen) renderPanel();      // newly-loaded tiles may add a verdict
+    });
+
+    // initial paint
+    renderDatePill();
+    renderPillCoords();
   </script>
 </body>
 </html>
