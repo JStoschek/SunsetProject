@@ -2,40 +2,19 @@
 #include <climits>
 #include <cmath>
 #include <cstdint>
-#include <memory>
-#include <unordered_map>
 #include <vector>
 
+#include "FrozenTileSet.h"
 #include "GeoTile.h"
 #include "OceanMaskRasterizer.h"  // OceanOriginResult
 #include "OceanSampling.h"
 
-// An immutable set of rasterized ocean-mask tiles, sized to exactly one strip's
-// working set.  Built once (serially) by OceanMaskRasterizer::freeze before a
-// strip's parallel region and read concurrently by many FrozenOceanView
-// handles.  Performs no eviction: every working-set tile stays resident for the
-// whole strip.
-class FrozenOcean {
-public:
-    // Returns the packed water bits for `key`, or nullptr if it was not frozen.
-    const std::vector<uint64_t>* find(GeoTile key) const {
-        auto it = tiles_.find(key);
-        return it == tiles_.end() ? nullptr : it->second.get();
-    }
-
-    // Bits buffers are shared (shared_ptr) so freezing a tile already rasterized
-    // in the loader's cache costs no re-rasterization, and adjacent strips reuse
-    // the same data.
-    void insert(GeoTile key, std::shared_ptr<const std::vector<uint64_t>> bits) {
-        tiles_.emplace(key, std::move(bits));
-    }
-
-    std::size_t tile_count() const { return tiles_.size(); }
-
-private:
-    std::unordered_map<GeoTile, std::shared_ptr<const std::vector<uint64_t>>,
-                       GeoTileHash> tiles_;
-};
+// An immutable set of rasterized ocean-mask tiles for one strip's working set.
+// Just a named FrozenTileSet of packed water-bit buffers (built once by
+// OceanMaskRasterizer::freeze, read concurrently by many FrozenOceanView
+// handles, never evicted) — the is_water cursor, the not-frozen-is-water policy,
+// and the coast march live in FrozenOceanView below.
+class FrozenOcean : public FrozenTileSet<std::vector<uint64_t>> {};
 
 // A per-worker, read-only handle onto a shared FrozenOcean.  Each worker owns
 // its own view so the last-tile fast path (the cursor below) survives

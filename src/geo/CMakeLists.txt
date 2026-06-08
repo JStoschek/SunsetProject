@@ -7,3 +7,7 @@ target_include_directories(geo INTERFACE ${CMAKE_CURRENT_SOURCE_DIR})
 add_executable(test_geo_tile tests/test_geo_tile.cpp)
 target_link_libraries(test_geo_tile PRIVATE geo)
 add_test(NAME GeoTile COMMAND test_geo_tile)
+
+add_executable(test_frozen_tile_set tests/test_frozen_tile_set.cpp)
+target_link_libraries(test_frozen_tile_set PRIVATE geo)
+add_test(NAME FrozenTileSet COMMAND test_frozen_tile_set)
