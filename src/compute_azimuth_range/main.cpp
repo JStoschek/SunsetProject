@@ -226,7 +226,7 @@ int main(int argc, char* argv[]) {
         // Freeze the strip's working set (bbox + ray-tilt margin) into
         // eviction-free per-strip caches, then hand each worker its own
         // lock-free view onto the shared frozen tiles.
-        const std::set<std::pair<int, int>> work = strip_working_set(
+        const std::set<GeoTile> work = strip_working_set(
             strip_min_lat, strip_max_lat, min_lon, max_lon,
             config.strip_tilt_margin_deg);
         const FrozenDEM   frozen_dem   = dem_loader.freeze(work);

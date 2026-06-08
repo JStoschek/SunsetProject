@@ -2,7 +2,7 @@ find_package(GDAL REQUIRED)
 
 add_library(ocean_mask_rasterizer OceanMaskRasterizer.cpp GshhgWaterPolygonSource.cpp OsmWaterPolygonSource.cpp)
 target_include_directories(ocean_mask_rasterizer PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
-target_link_libraries(ocean_mask_rasterizer PRIVATE GDAL::GDAL)
+target_link_libraries(ocean_mask_rasterizer PUBLIC geo PRIVATE GDAL::GDAL)
 
 add_executable(test_gshhg_open tests/test_gshhg_open.cpp)
 target_link_libraries(test_gshhg_open PRIVATE ocean_mask_rasterizer)

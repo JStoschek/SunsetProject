@@ -1,27 +1,11 @@
 #pragma once
+#include <climits>
 #include <limits>
 #include <memory>
 #include <unordered_map>
-#include <utility>
 
 #include "DEMTile.h"
-
-// Internal DEM tile key: (lat_n, lon_w) = (floor(lat)+1, ceil(|lon|)), the same
-// NW-corner convention DEMTileLoader uses to name and look up tiles.
-using DEMTileKey = std::pair<int, int>;
-
-struct DEMTileKeyHash {
-    std::size_t operator()(DEMTileKey p) const noexcept {
-        return std::hash<long long>{}(
-            (long long)p.first << 32 | (unsigned int)p.second);
-    }
-};
-
-// The DEM tile key for a coordinate.  Shared by DEMTileLoader::get_elevation,
-// freeze(), and FrozenDEMView so all three agree on which tile owns a point.
-inline DEMTileKey dem_tile_key(double lat, double lon) {
-    return { (int)std::floor(lat) + 1, (int)std::ceil(std::fabs(lon)) };
-}
+#include "GeoTile.h"
 
 // An immutable set of DEM tiles, sized to exactly one strip's working set.
 // Built once (serially) by DEMTileLoader::freeze before a strip's parallel
@@ -32,7 +16,7 @@ class FrozenDEM {
 public:
     // Returns the tile owning `key`, or nullptr if it was not frozen (e.g. a
     // coordinate outside the working set — treated as no-data).
-    const DEMTile* find(DEMTileKey key) const {
+    const DEMTile* find(GeoTile key) const {
         auto it = tiles_.find(key);
         return it == tiles_.end() ? nullptr : it->second.get();
     }
@@ -40,15 +24,15 @@ public:
     // Used by DEMTileLoader::freeze to populate the structure.  Tile buffers are
     // shared (shared_ptr) so freezing a tile already resident in the loader's
     // cache costs no reload or copy, and adjacent strips reuse the same data.
-    void insert(DEMTileKey key, std::shared_ptr<const DEMTile> tile) {
+    void insert(GeoTile key, std::shared_ptr<const DEMTile> tile) {
         tiles_.emplace(key, std::move(tile));
     }
 
     std::size_t tile_count() const { return tiles_.size(); }
 
 private:
-    std::unordered_map<DEMTileKey, std::shared_ptr<const DEMTile>,
-                       DEMTileKeyHash> tiles_;
+    std::unordered_map<GeoTile, std::shared_ptr<const DEMTile>,
+                       GeoTileHash> tiles_;
 };
 
 // A per-worker, read-only handle onto a shared FrozenDEM.  Each worker owns its
@@ -59,7 +43,7 @@ public:
     explicit FrozenDEMView(const FrozenDEM& frozen) : frozen_(frozen) {}
 
     float get_elevation(double lat, double lon) {
-        const DEMTileKey key = dem_tile_key(lat, lon);
+        const GeoTile key = GeoTile::owning(lat, lon);
 
         const DEMTile* tile;
         if (last_tile_ && key == last_key_) {
@@ -76,6 +60,6 @@ public:
 
 private:
     const FrozenDEM& frozen_;
-    DEMTileKey       last_key_{INT_MAX, INT_MAX};
+    GeoTile          last_key_{INT_MAX, INT_MAX};
     const DEMTile*   last_tile_ = nullptr;
 };

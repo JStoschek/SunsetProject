@@ -10,6 +10,9 @@ target_include_directories(horizon_sweep_engine PUBLIC
     ${CMAKE_SOURCE_DIR}/src/ocean_mask_rasterizer
     ${CMAKE_SOURCE_DIR}/src/dem_tile_loader
 )
+# Those headers key tiles on GeoTile; propagate the geo include path to all
+# dependents (header-only, no link-time cost).
+target_link_libraries(horizon_sweep_engine PUBLIC geo)
 
 # Path to the real pipeline config, injected so tests stay config-driven
 # (no hard-coded tunables) — mirrors how sibling modules inject data paths.

@@ -20,24 +20,25 @@ DEMTileLoader::DEMTileLoader(const std::string& tile_dir, int lru_capacity)
         if (std::regex_match(name, m, pattern)) {
             int lat = std::stoi(m[1].str());
             int lon = std::stoi(m[2].str());
-            index_[{lat, lon}] = entry.path().string();
+            // Filename tokens are the USGS NW-corner labeling (n{lat}w{lon}).
+            index_[GeoTile::from_usgs(lat, lon)] = entry.path().string();
         }
     }
 }
 
 float DEMTileLoader::get_elevation(double lat, double lon) {
-    // Tile key: NW corner (lat_n = floor(lat)+1, lon_w = ceil(|lon|)).
-    // Compute as ints first and compare directly on the fast path — avoids
-    // constructing a std::pair<int,int> every call, which showed up at ~5%
-    // self-time in profiling.
-    const int klat = (int)std::floor(lat) + 1;
-    const int klon = (int)std::ceil(std::fabs(lon));
+    // Tile identity: the GeoTile owning the coordinate (signed SW corner,
+    // klat = floor(lat), klon = floor(lon)).  Compute as ints first and compare
+    // directly on the fast path — avoids materializing a GeoTile every call,
+    // which showed up at ~5% self-time in profiling (as the former pair did).
+    const int klat = (int)std::floor(lat);
+    const int klon = (int)std::floor(lon);
 
     // --- Fast path: same tile as last call (overwhelmingly common during a
     // horizon-sweep march, which steps along one ray inside a single DEM tile
     // for hundreds to thousands of queries in a row).
     const TileData* tile_ptr;
-    if (last_tile_ && klat == last_key_.first && klon == last_key_.second) {
+    if (last_tile_ && klat == last_key_.south && klon == last_key_.west) {
         tile_ptr = last_tile_;
     } else {
         const TileKey key{klat, klon};
@@ -115,13 +116,12 @@ DEMTileLoader::get_or_load(const TileKey& key, const std::string& path)
     return entry.data;
 }
 
-FrozenDEM DEMTileLoader::freeze(const std::set<std::pair<int, int>>& geo_keys)
+FrozenDEM DEMTileLoader::freeze(const std::set<GeoTile>& keys)
 {
     FrozenDEM frozen;
-    for (const auto& [geo_lat, geo_lon] : geo_keys) {
-        // Translate the geographic-floor key to the loader's NW-corner key by
-        // sampling the tile's interior, so freeze and get_elevation agree.
-        const TileKey key = dem_tile_key(geo_lat + 0.5, geo_lon + 0.5);
+    for (const GeoTile key : keys) {
+        // GeoTile is one identity regardless of labeling, so the working-set
+        // key indexes the loader directly — no convention bridge needed.
         auto idx = index_.find(key);
         if (idx == index_.end())
             continue;  // no tile file for this key — leave it unfrozen

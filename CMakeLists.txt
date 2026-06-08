@@ -7,6 +7,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 list(APPEND CMAKE_PREFIX_PATH /opt/homebrew)
 
 enable_testing()
+add_subdirectory(src/geo)
 add_subdirectory(src/dem_tile_loader)
 add_subdirectory(src/ocean_mask_rasterizer)
 add_subdirectory(src/horizon_sweep_engine)

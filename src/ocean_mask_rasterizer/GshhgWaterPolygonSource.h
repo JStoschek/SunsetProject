@@ -1,10 +1,10 @@
 #pragma once
+#include "GeoTile.h"
 #include "WaterPolygonSource.h"
 #include <cstdint>
 #include <fstream>
 #include <string>
 #include <unordered_map>
-#include <utility>
 #include <vector>
 
 // GSHHG binary header (big-endian on disk).
@@ -56,16 +56,9 @@ public:
                                 std::vector<OGRPolygon*>& out) override;
 
 private:
-    struct PairHash {
-        std::size_t operator()(std::pair<int,int> p) const noexcept {
-            return std::hash<long long>{}(
-                (long long)p.first << 32 | (unsigned int)p.second);
-        }
-    };
-
-    using TileKey = std::pair<int,int>;
-
+    // Internal spatial index keyed by the tile a polygon's bbox overlaps —
+    // signed SW-corner GeoTile, the same labeling land_polygons_for_tile uses.
     std::ifstream file_;
     std::string   path_;
-    std::unordered_map<TileKey, std::vector<PolyRef>, PairHash> index_;
+    std::unordered_map<GeoTile, std::vector<PolyRef>, GeoTileHash> index_;
 };

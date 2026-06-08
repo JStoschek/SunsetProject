@@ -2,7 +2,7 @@ find_package(GDAL REQUIRED)
 
 add_library(dem_tile_loader DEMTileLoader.cpp)
 target_include_directories(dem_tile_loader PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
-target_link_libraries(dem_tile_loader PRIVATE GDAL::GDAL)
+target_link_libraries(dem_tile_loader PUBLIC geo PRIVATE GDAL::GDAL)
 
 add_executable(test_tile_discovery tests/test_tile_discovery.cpp)
 target_link_libraries(test_tile_discovery PRIVATE dem_tile_loader)

@@ -11,9 +11,10 @@
 #include <cassert>
 #include <cstdio>
 #include <set>
-#include <utility>
 
-using TileKey = std::pair<int,int>;
+#include "GeoTile.h"
+
+using TileKey = GeoTile;
 
 // ── Cycle 1: interior strip, no tilt ─────────────────────────────────────────
 // Strip lat [37.1, 37.8], lon [-122.9, -121.1], margin 0.0

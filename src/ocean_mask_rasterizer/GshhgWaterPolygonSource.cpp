@@ -103,7 +103,7 @@ GshhgWaterPolygonSource::GshhgWaterPolygonSource(const std::string& path)
 void GshhgWaterPolygonSource::land_polygons_for_tile(
     int tile_lat, int tile_lon, std::vector<OGRPolygon*>& out)
 {
-    const TileKey key{tile_lat, tile_lon};
+    const GeoTile key{tile_lat, tile_lon};
     auto idx_it = index_.find(key);
     if (idx_it == index_.end()) return;
 

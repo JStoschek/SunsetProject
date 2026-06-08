@@ -17,16 +17,15 @@ public:
     float get_elevation(double lat, double lon);
     std::size_t tile_count() const { return index_.size(); }
 
-    // Build a frozen, eviction-free snapshot of the tiles in `geo_keys` (the
-    // strip working set, in geographic-floor (floor_lat, floor_lon) keys as
-    // returned by strip_working_set).  Loads each tile fresh; the stateful LRU
-    // cache is left untouched for the serial phases.  Keys with no matching tile
-    // file are skipped (their reads return no-data via FrozenDEM::find).
-    FrozenDEM freeze(const std::set<std::pair<int, int>>& geo_keys);
+    // Build a frozen, eviction-free snapshot of the tiles in `keys` (the strip
+    // working set).  Loads each tile fresh; the stateful LRU cache is left
+    // untouched for the serial phases.  Keys with no matching tile file are
+    // skipped (their reads return no-data via FrozenDEM::find).
+    FrozenDEM freeze(const std::set<GeoTile>& keys);
 
 private:
-    using TileKey  = DEMTileKey;
-    using PairHash = DEMTileKeyHash;
+    using TileKey  = GeoTile;
+    using PairHash = GeoTileHash;
     using TileData = DEMTile;
 
     struct CacheEntry {

@@ -175,12 +175,11 @@ bool OceanMaskRasterizer::is_water(double lat, double lon)
     return sample_water(last_bits_, tile_lat, tile_lon, lat, lon);
 }
 
-FrozenOcean OceanMaskRasterizer::freeze(
-    const std::set<std::pair<int, int>>& geo_keys)
+FrozenOcean OceanMaskRasterizer::freeze(const std::set<GeoTile>& keys)
 {
     FrozenOcean frozen;
-    for (const auto& [tile_lat, tile_lon] : geo_keys)
-        frozen.insert({tile_lat, tile_lon}, get_or_rasterize(tile_lat, tile_lon));
+    for (const GeoTile key : keys)
+        frozen.insert(key, get_or_rasterize(key.south, key.west));
     return frozen;
 }
 

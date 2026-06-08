@@ -81,8 +81,8 @@ int main() {
 
     DEMTileLoader loader(dir.string());
 
-    // Working set in geographic-floor keys (what strip_working_set returns).
-    std::set<std::pair<int,int>> work = {{37, -122}, {37, -123}};
+    // Working set of GeoTiles (what strip_working_set returns).
+    std::set<GeoTile> work = {{37, -122}, {37, -123}};
     FrozenDEM frozen = loader.freeze(work);
 
     // ── Cycle 1: frozen view reads match the stateful loader ─────────────────
@@ -112,7 +112,7 @@ int main() {
         make_tile(dir4, 39, 123, 4, 4, ramp(4000.0f), -123.0, 0.25, 39.0, -0.25);
 
         DEMTileLoader small_lru(dir4.string(), /*lru_capacity=*/2);
-        std::set<std::pair<int,int>> work4 = {
+        std::set<GeoTile> work4 = {
             {37, -122}, {37, -123}, {38, -122}, {38, -123},
         };
         FrozenDEM frozen4 = small_lru.freeze(work4);

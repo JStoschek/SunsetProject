@@ -4,22 +4,11 @@
 #include <cstdint>
 #include <memory>
 #include <unordered_map>
-#include <utility>
 #include <vector>
 
+#include "GeoTile.h"
 #include "OceanMaskRasterizer.h"  // OceanOriginResult
 #include "OceanSampling.h"
-
-// Ocean tile key: (floor_lat, floor_lon) — the same convention OceanMaskRasterizer
-// and strip_working_set use.
-using OceanTileKey = std::pair<int, int>;
-
-struct OceanTileKeyHash {
-    std::size_t operator()(OceanTileKey p) const noexcept {
-        return std::hash<long long>{}(
-            (long long)p.first << 32 | (unsigned int)p.second);
-    }
-};
 
 // An immutable set of rasterized ocean-mask tiles, sized to exactly one strip's
 // working set.  Built once (serially) by OceanMaskRasterizer::freeze before a
@@ -29,7 +18,7 @@ struct OceanTileKeyHash {
 class FrozenOcean {
 public:
     // Returns the packed water bits for `key`, or nullptr if it was not frozen.
-    const std::vector<uint64_t>* find(OceanTileKey key) const {
+    const std::vector<uint64_t>* find(GeoTile key) const {
         auto it = tiles_.find(key);
         return it == tiles_.end() ? nullptr : it->second.get();
     }
@@ -37,15 +26,15 @@ public:
     // Bits buffers are shared (shared_ptr) so freezing a tile already rasterized
     // in the loader's cache costs no re-rasterization, and adjacent strips reuse
     // the same data.
-    void insert(OceanTileKey key, std::shared_ptr<const std::vector<uint64_t>> bits) {
+    void insert(GeoTile key, std::shared_ptr<const std::vector<uint64_t>> bits) {
         tiles_.emplace(key, std::move(bits));
     }
 
     std::size_t tile_count() const { return tiles_.size(); }
 
 private:
-    std::unordered_map<OceanTileKey, std::shared_ptr<const std::vector<uint64_t>>,
-                       OceanTileKeyHash> tiles_;
+    std::unordered_map<GeoTile, std::shared_ptr<const std::vector<uint64_t>>,
+                       GeoTileHash> tiles_;
 };
 
 // A per-worker, read-only handle onto a shared FrozenOcean.  Each worker owns
@@ -59,7 +48,7 @@ public:
     bool is_water(double lat, double lon) {
         const int tile_lat = (int)std::floor(lat);
         const int tile_lon = (int)std::floor(lon);
-        const OceanTileKey key{tile_lat, tile_lon};
+        const GeoTile key{tile_lat, tile_lon};
 
         const uint64_t* bits;
         if (last_bits_ && key == last_key_) {
@@ -88,6 +77,6 @@ public:
 
 private:
     const FrozenOcean& frozen_;
-    OceanTileKey       last_key_{INT_MAX, INT_MAX};
+    GeoTile            last_key_{INT_MAX, INT_MAX};
     const uint64_t*    last_bits_ = nullptr;
 };

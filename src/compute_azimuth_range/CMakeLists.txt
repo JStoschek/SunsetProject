@@ -39,6 +39,7 @@ add_executable(test_strip_working_set tests/test_strip_working_set.cpp)
 target_include_directories(test_strip_working_set PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
 )
+target_link_libraries(test_strip_working_set PRIVATE geo)
 add_test(NAME StripWorkingSet COMMAND test_strip_working_set)
 
 add_executable(test_strip_post_process tests/test_strip_post_process.cpp)

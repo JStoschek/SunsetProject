@@ -40,8 +40,8 @@ int main() {
 
     OceanMaskRasterizer omr(GSHHG_FULL_PATH);
 
-    // Working set in geographic-floor (floor_lat, floor_lon) keys.
-    std::set<std::pair<int,int>> work = {
+    // Working set of GeoTiles (signed SW corner).
+    std::set<GeoTile> work = {
         {37, -123}, {37, -124}, {37, -125},
     };
     FrozenOcean frozen = omr.freeze(work);

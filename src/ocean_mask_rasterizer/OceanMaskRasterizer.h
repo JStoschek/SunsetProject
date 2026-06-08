@@ -1,13 +1,14 @@
 #pragma once
+#include <climits>
 #include <cstdint>
 #include <list>
 #include <memory>
 #include <set>
 #include <string>
 #include <unordered_map>
-#include <utility>
 #include <vector>
 
+#include "GeoTile.h"
 #include "WaterPolygonSource.h"
 
 class FrozenOcean;  // defined in FrozenOcean.h; returned by freeze()
@@ -48,11 +49,10 @@ public:
                                             double step_km  = 1.0,
                                             double max_km   = 100.0);
 
-    /// Build a frozen, eviction-free snapshot of the tiles in `geo_keys` (the
-    /// strip working set, in geographic-floor (floor_lat, floor_lon) keys as
-    /// returned by strip_working_set).  Rasterizes each tile once; the stateful
-    /// LRU cache is left untouched for the serial phases.
-    FrozenOcean freeze(const std::set<std::pair<int, int>>& geo_keys);
+    /// Build a frozen, eviction-free snapshot of the tiles in `keys` (the strip
+    /// working set).  Rasterizes each tile once; the stateful LRU cache is left
+    /// untouched for the serial phases.
+    FrozenOcean freeze(const std::set<GeoTile>& keys);
 
     /// Number of times a tile was rasterized (i.e. a cache miss occurred).
     /// Useful in tests to verify that cache hits do not trigger re-rasterization.
@@ -62,14 +62,8 @@ private:
     // -------------------------------------------------------------------------
     // LRU tile cache
     // -------------------------------------------------------------------------
-    struct PairHash {
-        std::size_t operator()(std::pair<int,int> p) const noexcept {
-            return std::hash<long long>{}(
-                (long long)p.first << 32 | (unsigned int)p.second);
-        }
-    };
-
-    using TileKey = std::pair<int,int>;   // (floor_lat, floor_lon)
+    using TileKey  = GeoTile;
+    using PairHash = GeoTileHash;
 
     // Packed 1-bit-per-pixel tile: word[i/64] bit (i%64) is 1 for water.
     struct CacheEntry {
