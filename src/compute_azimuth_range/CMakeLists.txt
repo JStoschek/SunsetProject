@@ -7,12 +7,19 @@ target_include_directories(azimuth_range_sweep PUBLIC
 )
 target_link_libraries(azimuth_range_sweep PUBLIC horizon_sweep_engine)
 
-# ── Main binary ───────────────────────────────────────────────────────────────
-add_executable(compute_azimuth_range main.cpp)
-target_link_libraries(compute_azimuth_range PRIVATE
+# ── Per-strip orchestration (freeze → sweep → water-mask) ─────────────────────
+add_library(strip_processor STATIC StripProcessor.cpp)
+target_include_directories(strip_processor PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(strip_processor PUBLIC
     azimuth_range_sweep
     dem_tile_loader
     ocean_mask_rasterizer
+)
+
+# ── Main binary ───────────────────────────────────────────────────────────────
+add_executable(compute_azimuth_range main.cpp)
+target_link_libraries(compute_azimuth_range PRIVATE
+    strip_processor
     GDAL::GDAL
 )
 
@@ -50,6 +57,13 @@ target_link_libraries(test_strip_post_process PRIVATE
     horizon_sweep_engine
 )
 add_test(NAME StripPostProcess COMMAND test_strip_post_process)
+
+add_executable(test_strip_processor tests/test_strip_processor.cpp)
+target_link_libraries(test_strip_processor PRIVATE strip_processor GDAL::GDAL)
+target_compile_definitions(test_strip_processor PRIVATE
+    PIPELINE_CONF_PATH="${PIPELINE_CONF}"
+)
+add_test(NAME StripProcessor COMMAND test_strip_processor)
 
 add_executable(test_serial_vs_parallel tests/test_serial_vs_parallel.cpp)
 target_link_libraries(test_serial_vs_parallel PRIVATE azimuth_range_sweep)

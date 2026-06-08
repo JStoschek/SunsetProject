@@ -35,14 +35,11 @@
 #include <gdal_priv.h>
 #include <ogr_spatialref.h>
 
-#include "AzimuthRangeSweep.h"
-#include "FrozenStripSources.h"
-#include "HorizonSweepEngine.h"
+#include "DEMTileLoader.h"
+#include "OceanMaskRasterizer.h"
 #include "OsmWaterPolygonSource.h"
 #include "PipelineConfig.h"
-#include "ProductionAdapters.h"
-#include "StripPostProcess.h"
-#include "StripWorkingSet.h"
+#include "StripProcessor.h"
 #include "ThreadPool.h"
 
 // ---------------------------------------------------------------------------
@@ -197,6 +194,12 @@ int main(int argc, char* argv[]) {
     config.worker_threads = nw;  // store resolved count for sweep_strip
     ThreadPool pool(nw);
 
+    // ── Per-strip orchestration: freeze → sweep → water-mask ──────────────
+    // Owns the freeze-before-parallel structure (ADR-0011); main keeps the
+    // GeoTIFF I/O below.
+    StripProcessor strip_processor(dem_loader, omr, pool, config,
+                                   min_lon, max_lon);
+
     // ── Strip loop (south → north) ───────────────────────────────────────
     if (config.strip_height_deg <= 0.0) {
         std::fprintf(stderr, "Error: strip_height_deg must be positive.\n");
@@ -223,31 +226,15 @@ int main(int argc, char* argv[]) {
                     strip_min_lat, strip_max_lat, az_count, nw);
         std::fflush(stdout);
 
-        // Freeze the strip's working set (bbox + ray-tilt margin) into
-        // eviction-free per-strip caches, then hand each worker its own
-        // lock-free view onto the shared frozen tiles.
-        const std::set<GeoTile> work = strip_working_set(
-            strip_min_lat, strip_max_lat, min_lon, max_lon,
-            config.strip_tilt_margin_deg);
-        const FrozenDEM   frozen_dem   = dem_loader.freeze(work);
-        const FrozenOcean frozen_ocean = omr.freeze(work);
-        FrozenStripSources sources(frozen_dem, frozen_ocean, config, nw);
-
-        StripResult result = sweep_strip(sources, config, pool,
-                                         strip_min_lat, strip_max_lat,
-                                         min_lon, max_lon);
+        // Freeze the strip's working set, sweep all azimuths in parallel, and
+        // apply the water mask — all behind the StripProcessor seam.
+        StripResult result =
+            strip_processor.process(strip_min_lat, strip_max_lat);
 
         const int strip_w = result.width;
         const int strip_h = result.height;
         const std::size_t n_pix =
             static_cast<std::size_t>(strip_w) * strip_h;
-
-        // Force every water pixel transparent and every land pixel that earned
-        // no visible azimuth to the never-visible sentinel (+inf, -inf).
-        apply_water_mask(result, strip_min_lat, min_lon, cell_deg,
-                         [&omr](double lat, double lon) {
-                             return omr.is_water(lat, lon);
-                         });
 
         // Flip each strip vertically (slice row 0 = south; GeoTIFF row 0 =
         // north) and write the block to the correct rows of the output.
