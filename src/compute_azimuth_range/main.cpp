@@ -1,17 +1,18 @@
-// compute_azimuth_range — for each cell in a bounding box, compute the range
-// of azimuths from which the ocean horizon is visible at sunset. Writes a
-// two-band Float32 GeoTIFF (band 1 = min_az, band 2 = max_az) with a
-// three-state encoding so downstream rendering can distinguish ocean from
-// land that is permanently behind a ridge:
+// compute_azimuth_range — for each cell in a bounding box, compute the exact
+// set of azimuths from which the ocean horizon is visible at sunset. Writes a
+// packed per-pixel azimuth bitmask (ADR-0013) as a bytes_per_pixel-band uint8
+// GeoTIFF, with the azimuth window/step, bit_count, and format_version embedded
+// as metadata tags. Each pixel's bits (LSB-first, per the BitLayout wire
+// contract) encode the three display states downstream rendering needs:
 //
-//   (NaN,  NaN)  ocean or DEM-no-data — no measurement applies
-//   (+inf, -inf) land cell whose visible-azimuth range is empty (every
-//                swept azimuth was blocked by terrain)
-//   (min,  max)  land cell, visible at least once in [azimuth_min_deg,
-//                azimuth_max_deg]; min ≤ max, both finite
+//   all bytes zero            ocean or DEM-no-data — transparent (flag clear)
+//   flag set, no vis bits     land that no swept azimuth can see — opaque black
+//   flag set, vis bits set    land visible at azimuth_min_deg + i·step for each
+//                             set bit i — date-dependent colouring
 //
-// The land/empty-range distinction is resolved by querying the ocean mask
-// (GSHHG) for every cell where the sweep produced no visible azimuth.
+// The land/water distinction is resolved by querying the ocean mask for every
+// cell (the flag bit at index bit_count); water transparency dominates any
+// computed visibility.
 //
 // Usage:
 //   compute_azimuth_range --config <pipeline.conf>
@@ -23,7 +24,6 @@
 
 #include <cmath>
 #include <cstdio>
-#include <limits>
 #include <memory>
 #include <set>
 #include <stdexcept>
@@ -33,14 +33,19 @@
 #include <vector>
 
 #include <gdal_priv.h>
-#include <ogr_spatialref.h>
 
+#include "BitLayout.h"
+#include "BitmaskGeoTiffWriter.h"
 #include "DEMTileLoader.h"
 #include "OceanMaskRasterizer.h"
 #include "OsmWaterPolygonSource.h"
 #include "PipelineConfig.h"
 #include "StripProcessor.h"
 #include "ThreadPool.h"
+
+// Wire-format version stamped into the GeoTIFF metadata (ADR-0013). The encoder
+// and frontend reject a packing they don't understand by checking this.
+static constexpr int kFormatVersion = 1;
 
 // ---------------------------------------------------------------------------
 // CLI parsing
@@ -138,47 +143,23 @@ int main(int argc, char* argv[]) {
     std::printf("Output grid: %d × %d pixels (cell = %.6f°)\n",
                 total_width, total_height, cell_deg);
 
-    // ── Pre-create the output GeoTIFF (north-up, EPSG:4326, 2 Float32 bands) ──
+    // ── Pre-create the output GeoTIFF (north-up, EPSG:4326, packed uint8 mask) ─
     GDALAllRegister();
 
-    GDALDriver* drv = GetGDALDriverManager()->GetDriverByName("GTiff");
-    if (!drv) {
-        std::fprintf(stderr, "Error: GTiff GDAL driver not available.\n");
+    // The packing math (bit_count, bytes_per_pixel) comes from the single
+    // BitLayout wire contract; the writer stamps the azimuth/format metadata.
+    const BitLayout layout = BitLayout::from_config(
+        config.azimuth_min_deg, config.azimuth_max_deg, config.azimuth_step_deg);
+
+    std::unique_ptr<BitmaskGeoTiffWriter> writer;
+    try {
+        writer = std::make_unique<BitmaskGeoTiffWriter>(
+            a.output_path, total_width, total_height,
+            min_lon, max_lat, cell_deg, layout, kFormatVersion);
+    } catch (const std::exception& e) {
+        std::fprintf(stderr, "Error: %s\n", e.what());
         return 1;
     }
-
-    const float nan_f = std::numeric_limits<float>::quiet_NaN();
-
-    char** create_opts = nullptr;
-    create_opts = CSLSetNameValue(create_opts, "COMPRESS", "DEFLATE");
-    create_opts = CSLSetNameValue(create_opts, "TILED",    "YES");
-
-    GDALDataset* ds = drv->Create(a.output_path.c_str(),
-                                  total_width, total_height,
-                                  2, GDT_Float32, create_opts);
-    CSLDestroy(create_opts);
-    if (!ds) {
-        std::fprintf(stderr, "Error: could not create '%s'.\n",
-                     a.output_path.c_str());
-        return 1;
-    }
-
-    double gt[6] = { min_lon, cell_deg, 0.0, max_lat, 0.0, -cell_deg };
-    ds->SetGeoTransform(gt);
-
-    OGRSpatialReference srs;
-    srs.importFromEPSG(4326);
-    char* wkt = nullptr;
-    srs.exportToWkt(&wkt);
-    ds->SetProjection(wkt);
-    CPLFree(wkt);
-
-    GDALRasterBand* band_min = ds->GetRasterBand(1);
-    GDALRasterBand* band_max = ds->GetRasterBand(2);
-    band_min->SetNoDataValue(nan_f);
-    band_max->SetNoDataValue(nan_f);
-    band_min->SetDescription("min_az_deg");
-    band_max->SetDescription("max_az_deg");
 
     // ── Shared production loaders (one instance, reused per strip) ────────
     // Used serially: to freeze each strip's working set before its parallel
@@ -203,7 +184,6 @@ int main(int argc, char* argv[]) {
     // ── Strip loop (south → north) ───────────────────────────────────────
     if (config.strip_height_deg <= 0.0) {
         std::fprintf(stderr, "Error: strip_height_deg must be positive.\n");
-        GDALClose(ds);
         return 1;
     }
 
@@ -231,49 +211,24 @@ int main(int argc, char* argv[]) {
         StripResult result =
             strip_processor.process(strip_min_lat, strip_max_lat);
 
-        const int strip_w = result.width;
         const int strip_h = result.height;
-        const std::size_t n_pix =
-            static_cast<std::size_t>(strip_w) * strip_h;
 
-        // Flip each strip vertically (slice row 0 = south; GeoTIFF row 0 =
-        // north) and write the block to the correct rows of the output.
+        // Place the strip at the correct rows of the output (slice row 0 =
+        // south; GeoTIFF row 0 = north).  The writer owns the vertical flip and
+        // the band de-interleave.
         const int y_off = total_height - rows_written_from_south - strip_h;
         if (y_off < 0) {
             std::fprintf(stderr,
                 "Error: strip rows (%d so far + %d) exceed output height %d.\n",
                 rows_written_from_south, strip_h, total_height);
-            GDALClose(ds);
             return 1;
         }
 
-        std::vector<float> flipped(n_pix);
-        for (int band_idx = 0; band_idx < 2; ++band_idx) {
-            const std::vector<float>& src =
-                (band_idx == 0) ? result.min_az_buf : result.max_az_buf;
-            for (int r = 0; r < strip_h; ++r) {
-                const int tiff_row_in_strip = strip_h - 1 - r;
-                std::copy_n(
-                    src.data() + static_cast<std::size_t>(r) * strip_w,
-                    strip_w,
-                    flipped.data() +
-                        static_cast<std::size_t>(tiff_row_in_strip) * strip_w);
-            }
-            GDALRasterBand* band =
-                (band_idx == 0) ? band_min : band_max;
-            const CPLErr err = band->RasterIO(GF_Write,
-                                              0, y_off,
-                                              strip_w, strip_h,
-                                              flipped.data(),
-                                              strip_w, strip_h,
-                                              GDT_Float32, 0, 0);
-            if (err != CE_None) {
-                std::fprintf(stderr,
-                    "Error: RasterIO write failed for strip %d band %d.\n",
-                    strip_index, band_idx + 1);
-                GDALClose(ds);
-                return 1;
-            }
+        try {
+            writer->write_strip(result, y_off);
+        } catch (const std::exception& e) {
+            std::fprintf(stderr, "Error: %s (strip %d).\n", e.what(), strip_index);
+            return 1;
         }
 
         rows_written_from_south += strip_h;
@@ -281,7 +236,7 @@ int main(int argc, char* argv[]) {
         ++strip_index;
     }
 
-    GDALClose(ds);
+    writer->close();
 
     std::printf("Wrote %s  (%d × %d pixels, %d strip%s)\n",
                 a.output_path.c_str(), total_width, total_height,

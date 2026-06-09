@@ -34,13 +34,16 @@ StripResult StripProcessor::process(double strip_min_lat, double strip_max_lat) 
                                      strip_min_lat, strip_max_lat,
                                      min_lon_, max_lon_);
 
-    // Force every water pixel transparent and every land pixel that earned no
-    // visible azimuth to the never-visible sentinel.  Uses the stateful
-    // rasterizer directly (serial phase — workers have finished).
+    // Set the land/data flag: water pixels are zeroed (transparent), all other
+    // land pixels get the flag bit — including land that earned no visible
+    // azimuth (opaque black).  Uses the stateful rasterizer directly (serial
+    // phase — workers have finished).
+    const BitLayout layout = BitLayout::from_config(
+        config_.azimuth_min_deg, config_.azimuth_max_deg, config_.azimuth_step_deg);
     const double cell_deg = 1.0 / config_.cell_per_degree;
-    apply_water_mask(result, strip_min_lat, min_lon_, cell_deg,
-                     [this](double lat, double lon) {
-                         return omr_.is_water(lat, lon);
-                     });
+    apply_land_data_flag(result, layout, strip_min_lat, min_lon_, cell_deg,
+                         [this](double lat, double lon) {
+                             return omr_.is_water(lat, lon);
+                         });
     return result;
 }

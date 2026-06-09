@@ -7,15 +7,17 @@
 //     meridian, so the strip has open Pacific to the west and flat land east.
 //
 // The strip is run at a coarse cell_per_degree (fast) and the result is checked
-// against all three mask states the composition must produce:
-//   1. a water pixel (west of the coast)            -> (NaN, NaN)
-//   2. a land pixel just east of the coast (visible) -> finite range
+// against all three display states the composition must produce (ADR-0013):
+//   1. a water pixel (west of the coast)            -> flag clear (transparent)
+//   2. a land pixel just east of the coast (visible) -> flag set + visibility bits
 //   3. a far-inland land pixel (curvature hides the
-//      ocean horizon over flat terrain)             -> (+inf, -inf) sentinel
+//      ocean horizon over flat terrain)             -> flag set, no visibility bits
 //
 // PIPELINE_CONF_PATH is injected by CMake; tunables are overridden for speed.
 
 #include "StripProcessor.h"
+
+#include "BitLayout.h"
 
 #include "DEMTileLoader.h"
 #include "OceanMaskRasterizer.h"
@@ -28,6 +30,7 @@
 
 #include <cassert>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <filesystem>
 #include <limits>
@@ -116,41 +119,51 @@ int main() {
 
     const double cell_deg = 1.0 / config.cell_per_degree;
     const int W = result.width, H = result.height;
+    const int bpp = result.bytes_per_pixel;
+    const BitLayout layout = BitLayout::from_config(
+        config.azimuth_min_deg, config.azimuth_max_deg, config.azimuth_step_deg);
+    assert(bpp == layout.bytes_per_pixel);
     assert(W == (int)std::lround((max_lon - min_lon) * config.cell_per_degree));
     assert(H == (int)std::lround((strip_max_lat - strip_min_lat) * config.cell_per_degree));
     std::printf("PASS: strip dims %d x %d\n", W, H);
 
-    auto idx = [&](double lat, double lon) {
+    auto pixel = [&](double lat, double lon) {
         const int r = (int)std::lround((lat - strip_min_lat) / cell_deg);
         const int c = (int)std::lround((lon - min_lon) / cell_deg);
         assert(r >= 0 && r < H && c >= 0 && c < W);
-        return static_cast<std::size_t>(r) * W + c;
+        const std::size_t i = static_cast<std::size_t>(r) * W + c;
+        return result.mask.data() + i * bpp;
+    };
+    auto any_visibility = [&](const std::uint8_t* p) {
+        for (int b = 0; b < layout.bit_count; ++b)
+            if (BitLayout::get_bit(p, b)) return true;
+        return false;
     };
     const double mid_lat = 37.4;
 
-    // 1. Water pixel west of the coast → masked to NaN.
+    // 1. Water pixel west of the coast → flag clear (transparent).
     {
-        const std::size_t i = idx(mid_lat, -122.7);
-        assert(std::isnan(result.min_az_buf[i]) && std::isnan(result.max_az_buf[i]));
-        std::puts("PASS: ocean pixel masked to NaN");
+        const std::uint8_t* p = pixel(mid_lat, -122.7);
+        assert(!layout.get_flag(p) && "ocean pixel must be transparent");
+        assert(!any_visibility(p) && "ocean pixel carries no visibility bits");
+        std::puts("PASS: ocean pixel → flag clear (transparent)");
     }
 
-    // 2. Land pixel just east of the coast → visible, finite range.
+    // 2. Land pixel just east of the coast → flag set + at least one bit.
     {
-        const std::size_t i = idx(mid_lat, -122.48);
-        assert(std::isfinite(result.min_az_buf[i]) &&
-               std::isfinite(result.max_az_buf[i]));
-        assert(result.min_az_buf[i] <= result.max_az_buf[i]);
-        std::puts("PASS: near-coast land pixel has a finite azimuth range");
+        const std::uint8_t* p = pixel(mid_lat, -122.48);
+        assert(layout.get_flag(p) && "near-coast land must be opaque (flag set)");
+        assert(any_visibility(p) && "near-coast land sees the sunset");
+        std::puts("PASS: near-coast land → flag set with visibility bits");
     }
 
     // 3. Far-inland land pixel → curvature hides the ocean horizon over flat
-    //    terrain → never-visible sentinel (+inf, -inf), not NaN.
+    //    terrain → never-visible: flag set, no visibility bits.
     {
-        const std::size_t i = idx(mid_lat, -122.25);
-        const float pos_inf = std::numeric_limits<float>::infinity();
-        assert(result.min_az_buf[i] == pos_inf && result.max_az_buf[i] == -pos_inf);
-        std::puts("PASS: far-inland flat land hits the never-visible sentinel");
+        const std::uint8_t* p = pixel(mid_lat, -122.25);
+        assert(layout.get_flag(p) && "far-inland land is still opaque (flag set)");
+        assert(!any_visibility(p) && "far-inland flat land never sees the sunset");
+        std::puts("PASS: far-inland flat land → flag set, no visibility bits");
     }
 
     fs::remove_all(dir);

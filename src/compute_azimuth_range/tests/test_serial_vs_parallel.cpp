@@ -2,7 +2,7 @@
 //
 // Runs sweep_strip over a small synthetic bbox twice — once with worker_threads=1
 // (serial) and once with worker_threads=4 (parallel) — and asserts byte-for-byte
-// identical min_az / max_az buffers.  Uses FakeDEM (flat 0 m terrain) and
+// identical packed bitmask buffers.  Uses FakeDEM (flat 0 m terrain) and
 // FakeCoast (meridional coast), so the test needs no file I/O and no real DEM
 // or GSHHG data.
 //
@@ -70,24 +70,20 @@ int main() {
     const StripResult parallel = sweep_strip(sources, cfg4, pool4,
                                              kMinLat, kMaxLat, kMinLon, kMaxLon);
 
-    assert(serial.width  == parallel.width);
-    assert(serial.height == parallel.height);
+    assert(serial.width           == parallel.width);
+    assert(serial.height          == parallel.height);
+    assert(serial.bytes_per_pixel == parallel.bytes_per_pixel);
+    assert(serial.mask.size()     == parallel.mask.size());
 
-    const int n = serial.width * serial.height;
     int mismatches = 0;
-    for (int i = 0; i < n; ++i) {
-        const bool min_ok = (serial.min_az_buf[i] == parallel.min_az_buf[i])
-                         || (std::isnan(serial.min_az_buf[i]) && std::isnan(parallel.min_az_buf[i]));
-        const bool max_ok = (serial.max_az_buf[i] == parallel.max_az_buf[i])
-                         || (std::isnan(serial.max_az_buf[i]) && std::isnan(parallel.max_az_buf[i]));
-        if (!min_ok || !max_ok) {
-            std::fprintf(stderr, "  pixel %d: serial (%.1f, %.1f) != parallel (%.1f, %.1f)\n",
-                         i, serial.min_az_buf[i], serial.max_az_buf[i],
-                         parallel.min_az_buf[i], parallel.max_az_buf[i]);
+    for (std::size_t b = 0; b < serial.mask.size(); ++b) {
+        if (serial.mask[b] != parallel.mask[b]) {
+            std::fprintf(stderr, "  byte %zu: serial 0x%02x != parallel 0x%02x\n",
+                         b, serial.mask[b], parallel.mask[b]);
             ++mismatches;
         }
     }
     assert(mismatches == 0 && "serial and parallel outputs differ");
-    std::puts("PASS: serial (1 thread) and parallel (4 threads) produce identical min/max buffers");
+    std::puts("PASS: serial (1 thread) and parallel (4 threads) produce identical bitmask buffers");
     return 0;
 }

@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "AzimuthRangeAccumulator.h"
+#include "BitLayout.h"
 
 StripResult sweep_strip(StripSources&         sources,
                         const PipelineConfig& config,
@@ -35,8 +36,12 @@ StripResult sweep_strip(StripSources&         sources,
          az += config.azimuth_step_deg)
         azimuths.push_back(az);
 
-    // Shared accumulator + fold mutex.
-    AzimuthRangeAccumulator acc(static_cast<std::size_t>(strip_w) * strip_h);
+    // Shared accumulator + fold mutex.  The packing math comes from the single
+    // BitLayout wire contract (ADR-0013), derived from the sweep window/step.
+    const BitLayout layout = BitLayout::from_config(
+        config.azimuth_min_deg, config.azimuth_max_deg, config.azimuth_step_deg);
+    AzimuthRangeAccumulator acc(
+        static_cast<std::size_t>(strip_w) * strip_h, layout);
     std::mutex acc_mu;
 
     // Shared azimuth counter: workers claim azimuths atomically.
@@ -61,6 +66,5 @@ StripResult sweep_strip(StripSources&         sources,
 
     pool.run_batch(std::move(tasks));
 
-    return { std::move(acc.min_az_buf), std::move(acc.max_az_buf),
-             strip_w, strip_h };
+    return { std::move(acc.mask), strip_w, strip_h, layout.bytes_per_pixel };
 }

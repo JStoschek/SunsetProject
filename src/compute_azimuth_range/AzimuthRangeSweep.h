@@ -1,16 +1,20 @@
 #pragma once
+#include <cstdint>
 #include <vector>
 
 #include "HorizonSweepEngine.h"
 #include "PipelineConfig.h"
 #include "ThreadPool.h"
 
-/// Accumulated min/max azimuth buffers for one latitude strip.
+/// Packed per-pixel azimuth bitmask for one latitude strip (ADR-0013).  `mask`
+/// is width*height*bytes_per_pixel bytes, row 0 = south, each pixel's bits
+/// packed LSB-first per the BitLayout wire contract: bit i = visible at the
+/// i-th swept azimuth, bit bit_count = the land/data flag.
 struct StripResult {
-    std::vector<float> min_az_buf;
-    std::vector<float> max_az_buf;
-    int width  = 0;
-    int height = 0;
+    std::vector<std::uint8_t> mask;
+    int width           = 0;
+    int height          = 0;
+    int bytes_per_pixel = 0;
 };
 
 /// Supplies each pool worker with its own elevation/coast abstractions for a
