@@ -1,0 +1,52 @@
+{
+  "_comment": [
+    "Shared wire-contract test vectors for the per-pixel azimuth bitmask (ADR-0013).",
+    "Single source of truth: the C++ test (via a generated header) and the JS test",
+    "both assert against THIS file, so the engine packer and frontend reader cannot",
+    "silently disagree on bit order or layout. Bits are LSB-first within each byte;",
+    "azimuth->index rounding is floor(x+0.5) (== JS Math.round) in both languages."
+  ],
+  "configs": [
+    {
+      "name": "production",
+      "azimuth_min_deg": 233,
+      "azimuth_max_deg": 309,
+      "azimuth_step_deg": 1.0,
+      "bit_count": 77,
+      "bytes_per_pixel": 10,
+      "flag_bit_index": 77
+    },
+    {
+      "name": "alt_wide_step2",
+      "azimuth_min_deg": 200,
+      "azimuth_max_deg": 360,
+      "azimuth_step_deg": 2.0,
+      "bit_count": 81,
+      "bytes_per_pixel": 11,
+      "flag_bit_index": 81
+    }
+  ],
+  "azimuth_to_bit": [
+    { "config": "production", "azimuth": 233, "bit_index": 0,  "byte_offset": 0, "mask": 1 },
+    { "config": "production", "azimuth": 234, "bit_index": 1,  "byte_offset": 0, "mask": 2 },
+    { "config": "production", "azimuth": 240, "bit_index": 7,  "byte_offset": 0, "mask": 128 },
+    { "config": "production", "azimuth": 241, "bit_index": 8,  "byte_offset": 1, "mask": 1 },
+    { "config": "production", "azimuth": 270, "bit_index": 37, "byte_offset": 4, "mask": 32 },
+    { "config": "production", "azimuth": 309, "bit_index": 76, "byte_offset": 9, "mask": 16 },
+    { "config": "alt_wide_step2", "azimuth": 200, "bit_index": 0,  "byte_offset": 0,  "mask": 1 },
+    { "config": "alt_wide_step2", "azimuth": 202, "bit_index": 1,  "byte_offset": 0,  "mask": 2 },
+    { "config": "alt_wide_step2", "azimuth": 203, "bit_index": 2,  "byte_offset": 0,  "mask": 4 },
+    { "config": "alt_wide_step2", "azimuth": 360, "bit_index": 80, "byte_offset": 10, "mask": 1 }
+  ],
+  "rejected": [
+    { "config": "production", "azimuth": 100 },
+    { "config": "production", "azimuth": 232.4 },
+    { "config": "production", "azimuth": 310 },
+    { "config": "alt_wide_step2", "azimuth": 198 },
+    { "config": "alt_wide_step2", "azimuth": 362 }
+  ],
+  "flag_bit": [
+    { "config": "production",    "bit_index": 77, "byte_offset": 9,  "mask": 32 },
+    { "config": "alt_wide_step2", "bit_index": 81, "byte_offset": 10, "mask": 2 }
+  ]
+}
