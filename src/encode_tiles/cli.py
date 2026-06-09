@@ -23,15 +23,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="encode_tiles",
         description=(
-            "Encode a two-band float32 GeoTIFF (min_az, max_az) into an XYZ "
-            "RGBA PNG tile pyramid per ADR-0003."
+            "Encode a packed bitmask GeoTIFF into XYZ .bin tile pyramid per ADR-0013."
         ),
     )
     parser.add_argument(
         "--input",
         required=True,
         type=Path,
-        help="Path to the two-band float32 GeoTIFF produced by compute_azimuth_range.",
+        help="Path to the packed bitmask GeoTIFF produced by the engine.",
     )
     parser.add_argument(
         "--output-dir",
@@ -86,7 +85,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     try:
         mosaic = encode_source_to_base_raster(args.input, zoom=args.max_zoom)
-    except ValueError as exc:
+    except (ValueError, KeyError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
 
@@ -97,6 +96,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         minzoom=args.min_zoom,
         maxzoom=args.max_zoom,
         tile_size=TILE_SIZE,
+        format_version=mosaic.format_version,
+        azimuth_min_deg=mosaic.azimuth_min_deg,
+        azimuth_max_deg=mosaic.azimuth_max_deg,
+        azimuth_step_deg=mosaic.azimuth_step_deg,
+        bit_count=mosaic.bit_count,
+        bytes_per_pixel=mosaic.bytes_per_pixel,
     )
     (args.output_dir / "tilejson.json").write_text(json.dumps(tilejson, indent=2))
 

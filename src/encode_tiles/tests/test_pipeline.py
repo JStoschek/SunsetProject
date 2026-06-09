@@ -1,7 +1,8 @@
-"""End-to-end test for the single-zoom encoder pipeline."""
+"""End-to-end tests for the bitmask encoder pipeline (ADR-0013)."""
 
 from __future__ import annotations
 
+import gzip
 import json
 import math
 from pathlib import Path
@@ -9,69 +10,76 @@ from pathlib import Path
 import numpy as np
 import pytest
 import rasterio
-from PIL import Image
 from rasterio.transform import from_bounds
 
 from encode_tiles.cli import main
 from encode_tiles.mosaic import TILE_SIZE, WEB_MERCATOR_EXTENT
 
 
+# Production azimuth config (matches vectors.json).
+BYTES_PER_PIXEL = 10
+AZ_MIN = 233.0
+AZ_MAX = 309.0
+AZ_STEP = 1.0
+BIT_COUNT = 77
+FORMAT_VERSION = 1
+# Flag bit: index=77 → byte 9, mask 0x20.
+_FLAG_BYTE = 9
+_FLAG_MASK = 0x20
+
 SRC_HEIGHT = 4
 SRC_WEST = 0.0
 SRC_EAST = 4.0
 SRC_SOUTH = 0.0
 SRC_NORTH = 4.0
-# Row 0 is the northern row. Layout:
-#   col:    0      1      2      3
-#  row 0: (210,230) (233,250) (309,320) (200,220)
-#  row 1: (220,240)  NaN      (250,270) (310,340)
-#  row 2: (230,250) (240,260) (260,280) (320,350)
-#  row 3: (240,260) (250,270) (270,290) (330,360)
+# col 0 = 0–1°E, row 0 = 3–4°N (northernmost)
 LAND_ROW, LAND_COL = 0, 0
-LAND_MIN_AZ, LAND_MAX_AZ = 210.0, 230.0
 OCEAN_ROW, OCEAN_COL = 1, 1
 ZOOM = 10
 
 
-def _fixture_arrays() -> tuple[np.ndarray, np.ndarray]:
-    min_az = np.array(
-        [
-            [210.0, 233.0, 309.0, 200.0],
-            [220.0, np.nan, 250.0, 310.0],
-            [230.0, 240.0, 260.0, 320.0],
-            [240.0, 250.0, 270.0, 330.0],
-        ],
-        dtype=np.float32,
-    )
-    max_az = np.array(
-        [
-            [230.0, 250.0, 320.0, 220.0],
-            [240.0, np.nan, 270.0, 340.0],
-            [250.0, 260.0, 280.0, 350.0],
-            [260.0, 270.0, 290.0, 360.0],
-        ],
-        dtype=np.float32,
-    )
-    return min_az, max_az
+def _land_pixel() -> bytes:
+    """10 bytes: bit 0 (visible at 233°) + flag bit."""
+    b = bytearray(BYTES_PER_PIXEL)
+    b[0] = 0x01
+    b[_FLAG_BYTE] = _FLAG_MASK
+    return bytes(b)
+
+
+def _transparent_pixel() -> bytes:
+    return bytes(BYTES_PER_PIXEL)
 
 
 def _make_fixture(path: Path) -> None:
-    min_az, max_az = _fixture_arrays()
+    """Write a 4×4 10-band uint8 GeoTIFF with production azimuth metadata."""
+    land = _land_pixel()
+    bands = []
+    for band_idx in range(BYTES_PER_PIXEL):
+        arr = np.zeros((SRC_HEIGHT, 4), dtype=np.uint8)
+        arr[LAND_ROW, LAND_COL] = land[band_idx]
+        bands.append(arr)
+
     transform = from_bounds(SRC_WEST, SRC_SOUTH, SRC_EAST, SRC_NORTH, 4, 4)
     with rasterio.open(
         path,
         "w",
         driver="GTiff",
         width=4,
-        height=4,
-        count=2,
-        dtype="float32",
+        height=SRC_HEIGHT,
+        count=BYTES_PER_PIXEL,
+        dtype="uint8",
         crs="EPSG:4326",
         transform=transform,
-        nodata=float("nan"),
     ) as dst:
-        dst.write(min_az, 1)
-        dst.write(max_az, 2)
+        for i, arr in enumerate(bands, start=1):
+            dst.write(arr, i)
+        dst.update_tags(
+            azimuth_min_deg=str(AZ_MIN),
+            azimuth_max_deg=str(AZ_MAX),
+            azimuth_step_deg=str(AZ_STEP),
+            bit_count=str(BIT_COUNT),
+            format_version=str(FORMAT_VERSION),
+        )
 
 
 def _lonlat_to_3857(lon: float, lat: float) -> tuple[float, float]:
@@ -81,7 +89,7 @@ def _lonlat_to_3857(lon: float, lat: float) -> tuple[float, float]:
 
 
 def _world_to_tile(x: float, y: float, zoom: int) -> tuple[int, int, int, int]:
-    """3857 coords -> (tile_x, tile_y, pixel_x_in_tile, pixel_y_in_tile)."""
+    """3857 coords → (tile_x, tile_y, pixel_x_in_tile, pixel_y_in_tile)."""
     tile_extent = (2.0 * WEB_MERCATOR_EXTENT) / (2 ** zoom)
     fx = (x + WEB_MERCATOR_EXTENT) / tile_extent
     fy = (WEB_MERCATOR_EXTENT - y) / tile_extent
@@ -99,58 +107,65 @@ def test_single_zoom_pipeline(tmp_path: Path) -> None:
 
     rc = main(
         [
-            "--input",
-            str(src_tif),
-            "--output-dir",
-            str(out_dir),
-            "--min-zoom",
-            str(ZOOM),
-            "--max-zoom",
-            str(ZOOM),
+            "--input", str(src_tif),
+            "--output-dir", str(out_dir),
+            "--min-zoom", str(ZOOM),
+            "--max-zoom", str(ZOOM),
         ]
     )
     assert rc == 0
 
-    # --- TileJSON ---
+    # --- TileJSON has correct format fields ---
     tj_path = out_dir / "tilejson.json"
     assert tj_path.is_file()
     tj = json.loads(tj_path.read_text())
+    assert tj["format"] == "sunset-bitmask"
+    assert tj["format_version"] == FORMAT_VERSION
+    assert tj["azimuth_min_deg"] == pytest.approx(AZ_MIN)
+    assert tj["azimuth_max_deg"] == pytest.approx(AZ_MAX)
+    assert tj["azimuth_step_deg"] == pytest.approx(AZ_STEP)
+    assert tj["bit_count"] == BIT_COUNT
+    assert tj["bytes_per_pixel"] == BYTES_PER_PIXEL
+    assert tj["tiles"] == ["{z}/{x}/{y}.bin"]
     assert tj["minzoom"] == ZOOM
     assert tj["maxzoom"] == ZOOM
-    assert tj["tile_size"] == TILE_SIZE
     west, south, east, north = tj["bounds"]
     assert west == pytest.approx(SRC_WEST, abs=1e-6)
     assert south == pytest.approx(SRC_SOUTH, abs=1e-6)
     assert east == pytest.approx(SRC_EAST, abs=1e-6)
     assert north == pytest.approx(SRC_NORTH, abs=1e-6)
 
-    # --- Known land pixel round-trip ---
-    # Source row r corresponds to lat band [SRC_NORTH - (r+1), SRC_NORTH - r].
+    # --- Known land pixel: bytes appear unaltered in .bin tile ---
     land_lon = SRC_WEST + LAND_COL + 0.5
     land_lat = SRC_NORTH - LAND_ROW - 0.5
     lx, ly = _lonlat_to_3857(land_lon, land_lat)
     tx, ty, px, py = _world_to_tile(lx, ly, ZOOM)
-    tile_path = out_dir / str(ZOOM) / str(tx) / f"{ty}.png"
+    tile_path = out_dir / str(ZOOM) / str(tx) / f"{ty}.bin"
     assert tile_path.is_file(), f"expected land tile at {tile_path}"
 
-    arr = np.asarray(Image.open(tile_path).convert("RGBA"))
-    r, g, _b, a = arr[py, px]
-    assert a == 255
-    decoded_min = r / 255.0 * 160.0 + 200.0
-    decoded_max = g / 255.0 * 160.0 + 200.0
-    assert abs(decoded_min - LAND_MIN_AZ) <= 0.6
-    assert abs(decoded_max - LAND_MAX_AZ) <= 0.6
+    with gzip.open(tile_path, "rb") as f:
+        raw = f.read()
+    assert len(raw) == TILE_SIZE * TILE_SIZE * BYTES_PER_PIXEL, (
+        f"tile body is {len(raw)} bytes, expected {TILE_SIZE * TILE_SIZE * BYTES_PER_PIXEL}"
+    )
+    pixel_offset = (py * TILE_SIZE + px) * BYTES_PER_PIXEL
+    pixel_bytes = bytes(raw[pixel_offset : pixel_offset + BYTES_PER_PIXEL])
+    assert pixel_bytes == _land_pixel(), (
+        f"pixel bytes {pixel_bytes.hex()} != expected {_land_pixel().hex()}"
+    )
 
-    # --- Ocean pixel has A = 0 ---
+    # --- Transparent pixel: tile absent or all-zero bytes at that position ---
     ocean_lon = SRC_WEST + OCEAN_COL + 0.5
     ocean_lat = SRC_NORTH - OCEAN_ROW - 0.5
     ox, oy = _lonlat_to_3857(ocean_lon, ocean_lat)
     otx, oty, opx, opy = _world_to_tile(ox, oy, ZOOM)
-    ocean_tile = out_dir / str(ZOOM) / str(otx) / f"{oty}.png"
+    ocean_tile = out_dir / str(ZOOM) / str(otx) / f"{oty}.bin"
     if ocean_tile.is_file():
-        arr_o = np.asarray(Image.open(ocean_tile).convert("RGBA"))
-        assert arr_o[opy, opx, 3] == 0
-    # else: tile fully transparent and was omitted — also acceptable.
+        with gzip.open(ocean_tile, "rb") as f:
+            ocean_raw = f.read()
+        ocean_offset = (opy * TILE_SIZE + opx) * BYTES_PER_PIXEL
+        ocean_bytes = bytes(ocean_raw[ocean_offset : ocean_offset + BYTES_PER_PIXEL])
+        assert ocean_bytes == _transparent_pixel()
 
 
 def test_overwrites_output_dir(tmp_path: Path) -> None:
@@ -163,14 +178,10 @@ def test_overwrites_output_dir(tmp_path: Path) -> None:
 
     rc = main(
         [
-            "--input",
-            str(src_tif),
-            "--output-dir",
-            str(out_dir),
-            "--min-zoom",
-            str(ZOOM),
-            "--max-zoom",
-            str(ZOOM),
+            "--input", str(src_tif),
+            "--output-dir", str(out_dir),
+            "--min-zoom", str(ZOOM),
+            "--max-zoom", str(ZOOM),
         ]
     )
     assert rc == 0
@@ -178,97 +189,21 @@ def test_overwrites_output_dir(tmp_path: Path) -> None:
     assert (out_dir / "tilejson.json").is_file()
 
 
-def test_invalid_source_pixel_fails(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    src_tif = tmp_path / "src.tif"
-    out_dir = tmp_path / "tiles"
-    # Out-of-range min_az (190 < 200) at (col=1, row=2).
-    min_az = np.full((4, 4), 210.0, dtype=np.float32)
-    max_az = np.full((4, 4), 250.0, dtype=np.float32)
-    min_az[2, 1] = 190.0
-    transform = from_bounds(SRC_WEST, SRC_SOUTH, SRC_EAST, SRC_NORTH, 4, 4)
-    with rasterio.open(
-        src_tif,
-        "w",
-        driver="GTiff",
-        width=4,
-        height=4,
-        count=2,
-        dtype="float32",
-        crs="EPSG:4326",
-        transform=transform,
-        nodata=float("nan"),
-    ) as dst:
-        dst.write(min_az, 1)
-        dst.write(max_az, 2)
-
-    rc = main(
-        [
-            "--input",
-            str(src_tif),
-            "--output-dir",
-            str(out_dir),
-            "--min-zoom",
-            str(ZOOM),
-            "--max-zoom",
-            str(ZOOM),
-        ]
-    )
-    assert rc != 0
-    err = capsys.readouterr().err
-    assert "x=1" in err and "y=2" in err
-    assert "190" in err
-
-
 PYRAMID_MAX_Z = 10
 PYRAMID_MIN_Z = 8
 
 
-def _pixel_center_lonlat(
-    z: int, tx: int, ty: int, px: int, py: int
-) -> tuple[float, float]:
-    te = 2.0 * WEB_MERCATOR_EXTENT / (2 ** z)
-    pix = te / TILE_SIZE
-    x = -WEB_MERCATOR_EXTENT + (tx * TILE_SIZE + px + 0.5) * pix
-    y = WEB_MERCATOR_EXTENT - (ty * TILE_SIZE + py + 0.5) * pix
-    lon = math.degrees(x / 6378137.0)
-    lat = math.degrees(2.0 * math.atan(math.exp(y / 6378137.0)) - math.pi / 2.0)
-    return lon, lat
-
-
-def _source_rgba_at_lonlat(
-    lon: float, lat: float, min_az: np.ndarray, max_az: np.ndarray
-) -> tuple[int, int, int, int]:
-    if not (SRC_WEST <= lon < SRC_EAST and SRC_SOUTH <= lat < SRC_NORTH):
-        return (0, 0, 0, 0)
-    col = int(lon - SRC_WEST)
-    row = int(SRC_NORTH - lat)
-    mn = float(min_az[row, col])
-    mx = float(max_az[row, col])
-    if math.isnan(mn) or math.isnan(mx):
-        return (0, 0, 0, 0)
-    r = round((mn - 200.0) / 160.0 * 255)
-    g = round((mx - 200.0) / 160.0 * 255)
-    return (r, g, 0, 255)
-
-
-def test_pyramid_pipeline(tmp_path: Path) -> None:
+def test_pyramid_produces_tiles_at_each_zoom(tmp_path: Path) -> None:
     src_tif = tmp_path / "src.tif"
     out_dir = tmp_path / "tiles"
     _make_fixture(src_tif)
-    fixture_min, fixture_max = _fixture_arrays()
 
     rc = main(
         [
-            "--input",
-            str(src_tif),
-            "--output-dir",
-            str(out_dir),
-            "--min-zoom",
-            str(PYRAMID_MIN_Z),
-            "--max-zoom",
-            str(PYRAMID_MAX_Z),
+            "--input", str(src_tif),
+            "--output-dir", str(out_dir),
+            "--min-zoom", str(PYRAMID_MIN_Z),
+            "--max-zoom", str(PYRAMID_MAX_Z),
         ]
     )
     assert rc == 0
@@ -281,45 +216,38 @@ def test_pyramid_pipeline(tmp_path: Path) -> None:
         zdir = out_dir / str(z)
         assert zdir.is_dir() and any(zdir.iterdir()), f"no tiles at zoom {z}"
 
-    # --- Parent pixel at MAX_Z - 1 over deep land cell (row=0, col=0). ---
+
+def test_pyramid_coarse_pixel_contains_land(tmp_path: Path) -> None:
+    """Byte-wise OR downsample: a land pixel at max zoom makes the parent opaque."""
+    src_tif = tmp_path / "src.tif"
+    out_dir = tmp_path / "tiles"
+    _make_fixture(src_tif)
+
+    rc = main(
+        [
+            "--input", str(src_tif),
+            "--output-dir", str(out_dir),
+            "--min-zoom", str(PYRAMID_MIN_Z),
+            "--max-zoom", str(PYRAMID_MAX_Z),
+        ]
+    )
+    assert rc == 0
+
+    # The parent pixel at PYRAMID_MAX_Z - 1 that contains the known land cell
+    # must also be opaque land (flag byte non-zero) after byte-wise OR downsample.
     parent_z = PYRAMID_MAX_Z - 1
     land_lon = SRC_WEST + LAND_COL + 0.5
     land_lat = SRC_NORTH - LAND_ROW - 0.5
     lx, ly = _lonlat_to_3857(land_lon, land_lat)
     ptx, pty, ppx, ppy = _world_to_tile(lx, ly, parent_z)
-    tile_path = out_dir / str(parent_z) / str(ptx) / f"{pty}.png"
+    tile_path = out_dir / str(parent_z) / str(ptx) / f"{pty}.bin"
     assert tile_path.is_file(), f"expected parent tile at {tile_path}"
-    arr = np.asarray(Image.open(tile_path).convert("RGBA"))
-    pr, pg, _pb, pa = arr[ppy, ppx]
-    assert pa == 255
 
-    # Independently compute the alpha-weighted mean of the four MAX_Z children
-    # that cover this parent pixel, by sampling the source fixture.
-    gx = ptx * TILE_SIZE + ppx
-    gy = pty * TILE_SIZE + ppy
-    children = []
-    for dy in (0, 1):
-        for dx in (0, 1):
-            cgx, cgy = 2 * gx + dx, 2 * gy + dy
-            ctx, cpx = divmod(cgx, TILE_SIZE)
-            cty, cpy = divmod(cgy, TILE_SIZE)
-            lon, lat = _pixel_center_lonlat(PYRAMID_MAX_Z, ctx, cty, cpx, cpy)
-            children.append(
-                _source_rgba_at_lonlat(lon, lat, fixture_min, fixture_max)
-            )
-    total_a = sum(a for *_, a in children)
-    assert total_a > 0
-    exp_r = sum(r * a for r, _g, _b, a in children) / total_a
-    exp_g = sum(g * a for _r, g, _b, a in children) / total_a
-    assert abs(pr - exp_r) / 255.0 * 160.0 <= 0.6
-    assert abs(pg - exp_g) / 255.0 * 160.0 <= 0.6
-
-    # --- All-transparent parent pixel: deep inside the NaN ocean cell (1,1). ---
-    ocean_lon = SRC_WEST + OCEAN_COL + 0.5
-    ocean_lat = SRC_NORTH - OCEAN_ROW - 0.5
-    olx, oly = _lonlat_to_3857(ocean_lon, ocean_lat)
-    otx, oty, opx, opy = _world_to_tile(olx, oly, parent_z)
-    ocean_tile = out_dir / str(parent_z) / str(otx) / f"{oty}.png"
-    if ocean_tile.is_file():
-        arr_o = np.asarray(Image.open(ocean_tile).convert("RGBA"))
-        assert arr_o[opy, opx, 3] == 0
+    with gzip.open(tile_path, "rb") as f:
+        raw = f.read()
+    pixel_offset = (ppy * TILE_SIZE + ppx) * BYTES_PER_PIXEL
+    pixel_bytes = bytes(raw[pixel_offset : pixel_offset + BYTES_PER_PIXEL])
+    # The flag byte must be non-zero (land from the OR of children).
+    assert pixel_bytes[_FLAG_BYTE] != 0, (
+        f"coarse pixel flag byte is 0 — land child was not ORed in: {pixel_bytes.hex()}"
+    )
