@@ -340,9 +340,20 @@ void HorizonSweepEngine::compute_slice(double azimuth_deg, AzimuthSlice& out) {
                 const double E = col * A;
                 if (std::lround(perp_of(E, N) / s) != j) continue;  // not this ray
                 const double dist = along_of(E, N) - along_c;
-                if (dist < 0.0) continue;  // seaward of the crossing: stays false
+                // Nearest-neighbour on the seaward end too. The coast search
+                // steps in whole increments of s and stops at the FIRST land
+                // sample, so along_c is biased up to a full sample INLAND of the
+                // true water/land boundary (which lies between the last-water
+                // and first-land samples). A land pixel can therefore sit up to
+                // a full s seaward of along_c and still be genuine beach; snap it
+                // to sample 0 rather than drop it. Only pixels beyond that full
+                // step are truly seaward and stay false; if they are ocean the
+                // downstream water mask (ADR-0013) repaints them regardless, so
+                // erring generous here is safe.
+                if (dist < -s) continue;
 
                 int idx = static_cast<int>(std::lround(dist / s));
+                if (idx < 0) idx = 0;
                 if (idx > last) idx = last;
                 out.visible[static_cast<std::size_t>(row) * width_ + col] =
                     verd[idx] != 0;
