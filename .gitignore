@@ -1,6 +1,7 @@
 # CMake build artifacts
 /build/
 /build-debug/
+/build-release/
 cmake-build-*/
 CMakeCache.txt
 CMakeFiles/
@@ -41,3 +42,11 @@ CONTEXT.md
 
 # Node / JS tooling
 /node_modules/
+
+# Python build/cache artifacts (encode_tiles)
+__pycache__/
+*.pyc
+*.egg-info/
+
+# Profiling output
+profile.json.gz
