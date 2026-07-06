@@ -13,9 +13,11 @@
   <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
   <!-- Version-pinned SunCalc CDN (mirrors the pinned-MapLibre rationale); attaches global SunCalc. -->
   <script src="https://unpkg.com/suncalc@1.9.0/suncalc.js"></script>
-  <!-- Pure modules (slices 01 & 02); UMD attaches sunsetAzimuth / encodeAzimuth globals. -->
+  <!-- Pure modules; UMD attaches sunsetAzimuth / BitLayout / colorizeBitmaskPixel / assertSupportedFormatVersion globals. -->
   <script src="sunset_azimuth.js"></script>
-  <script src="encode_azimuth.js"></script>
+  <script src="bit_layout.js"></script>
+  <script src="colorizer.js"></script>
+  <script src="format_guard.js"></script>
 
   <style>
   /* ─── design theme (ported verbatim from the Claude-design prototype) ──── */
@@ -262,7 +264,14 @@
   </div>
 
   <script>
-    // ═══ Visibility tile rendering (unchanged from the MapLibre app) ════════
+  (async () => {
+    // ─── TileJSON fetch: all tileset config derives from it ─────────────────
+    const tj = await fetch('tiles/tilejson.json').then(r => r.json());
+    assertSupportedFormatVersion(tj.format_version);
+    const layout = BitLayout.fromConfig(
+      tj.azimuth_min_deg, tj.azimuth_max_deg, tj.azimuth_step_deg,
+    );
+
     // Local "today" as YYYY-MM-DD, from local calendar components. Never
     // toISOString(): that yields the UTC date and can be a day ahead for
     // evening West Coast users.
@@ -273,17 +282,16 @@
       return `${y}-${m}-${day}`;
     }
 
-    // Parse a YYYY-MM-DD value into integer components (no Date/timezone
-    // round-trip), compute the Sunset Azimuth (slice 01) and encode it (slice 02).
-    function encodedAzForDate(dateValue, lat) {
+    // Parse a YYYY-MM-DD value and latitude into the visibility bit index for
+    // the date's sunset azimuth (null if the azimuth falls outside the window).
+    function bitIndexForDate(dateValue, lat) {
       const [y, m, d] = dateValue.split('-').map(Number);
-      const compassAz = sunsetAzimuth(y, m, d, lat);
-      return encodeAzimuth(compassAz);
+      return layout.azimuthToBitIndex(sunsetAzimuth(y, m, d, lat));
     }
 
     const INITIAL_CENTER = [-122.5, 37.85];
-    let currentDate = new Date();                 // the Selected date (local today)
-    let currentEncodedAz = encodedAzForDate(dateToValue(currentDate), INITIAL_CENTER[1]);
+    let currentDate = new Date();
+    let currentBitIndex = bitIndexForDate(dateToValue(currentDate), INITIAL_CENTER[1]);
 
     // Transparent 1×1 PNG for tiles that do not exist in the pyramid.
     const EMPTY_TILE = (() => {
@@ -294,30 +302,33 @@
       return arr.buffer;
     })();
 
-    // In-memory cache: tile URL -> { width, height, raw: Uint8Array (R, G, A per pixel) }
+    // In-memory cache: tile URL → { tileSize, bytesPerPixel, raw: Uint8Array }
     const rawCache = new Map();
 
-    // Pure threshold step: map raw R/G/A channels + encoded azimuth byte to display RGBA.
-    function applyThreshold(raw, width, height, encodedAz) {
-      const out = new Uint8ClampedArray(width * height * 4);
-      for (let i = 0; i < width * height; i++) {
-        const r = raw[i * 3];
-        const g = raw[i * 3 + 1];
-        const a = raw[i * 3 + 2];
+    // Decompress a gzip-compressed ArrayBuffer (tiles are stored gzip'd).
+    async function decompressGzip(buffer) {
+      const ds = new DecompressionStream('gzip');
+      const stream = new ReadableStream({
+        start(c) { c.enqueue(new Uint8Array(buffer)); c.close(); },
+      }).pipeThrough(ds);
+      return new Uint8Array(await new Response(stream).arrayBuffer());
+    }
+
+    // Colorize all pixels of a cached raw tile for the current bit index.
+    function applyBitmask(raw, tileSize, bytesPerPixel, bitIndex) {
+      const out = new Uint8ClampedArray(tileSize * tileSize * 4);
+      const { flagBitIndex } = layout;
+      for (let i = 0; i < tileSize * tileSize; i++) {
+        const pixel = raw.subarray(i * bytesPerPixel, (i + 1) * bytesPerPixel);
+        const [r, g, b, a] = colorizeBitmaskPixel(pixel, flagBitIndex, bitIndex);
         const j = i * 4;
-        if (a === 0) {                       // ocean / DEM no-data: leave transparent
-          continue;
-        } else if (r <= encodedAz && g >= encodedAz) {
-          out[j] = 255; out[j + 1] = 255; out[j + 2] = 255; out[j + 3] = 255;
-        } else {
-          out[j + 3] = 255;                  // black
-        }
+        out[j] = r; out[j + 1] = g; out[j + 2] = b; out[j + 3] = a;
       }
       return out;
     }
 
-    // Custom protocol: fetch raw visibility tiles, cache R/G/A channels on first fetch,
-    // then apply the threshold step to emit white / black / transparent per pixel.
+    // Custom protocol: fetch raw .bin Visibility Tiles (gzip-compressed),
+    // cache decompressed bytes, then colorize per the current bit index.
     maplibregl.addProtocol('visibility', async (params) => {
       const tileUrl = params.url.replace('visibility://', '').split('?')[0];
 
@@ -326,30 +337,18 @@
         const r = await fetch(tileUrl, { cache: 'no-cache' });
         if (!r.ok) return { data: EMPTY_TILE };
 
-        const buf = await r.arrayBuffer();
-        const bitmap = await createImageBitmap(new Blob([buf]));
-        const canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
-        const ctx = canvas.getContext('2d');
-        ctx.drawImage(bitmap, 0, 0);
-        const src = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
-
-        const raw = new Uint8Array(bitmap.width * bitmap.height * 3);
-        for (let i = 0; i < bitmap.width * bitmap.height; i++) {
-          raw[i * 3]     = src[i * 4];       // R (encoded min_az)
-          raw[i * 3 + 1] = src[i * 4 + 1];   // G (encoded max_az)
-          raw[i * 3 + 2] = src[i * 4 + 3];   // A (255 = land, 0 = ocean/no-data)
-        }
-        cached = { width: bitmap.width, height: bitmap.height, raw };
+        const raw = await decompressGzip(await r.arrayBuffer());
+        cached = { tileSize: tj.tile_size, bytesPerPixel: tj.bytes_per_pixel, raw };
         rawCache.set(tileUrl, cached);
         // A freshly-loaded tile may now cover the open Observer — refresh verdict.
         if (infoOpen) renderPanel();
       }
 
-      const { width, height, raw } = cached;
-      const rgba = applyThreshold(raw, width, height, currentEncodedAz);
-      const canvas = new OffscreenCanvas(width, height);
+      const { tileSize, bytesPerPixel, raw } = cached;
+      const rgba = applyBitmask(raw, tileSize, bytesPerPixel, currentBitIndex);
+      const canvas = new OffscreenCanvas(tileSize, tileSize);
       const ctx = canvas.getContext('2d');
-      ctx.putImageData(new ImageData(rgba, width, height), 0, 0);
+      ctx.putImageData(new ImageData(rgba, tileSize, tileSize), 0, 0);
       const blob = await canvas.convertToBlob();
       return { data: await blob.arrayBuffer() };
     });
@@ -368,11 +367,11 @@
           },
           visibility: {
             type: 'raster',
-            tiles: ['visibility://tiles/{z}/{x}/{y}.png'],
-            tileSize: 512,
-            minzoom: 6,
-            maxzoom: 14,
-            bounds: [-124, 37, -121, 39],
+            tiles: ['visibility://tiles/{z}/{x}/{y}.bin'],
+            tileSize: tj.tile_size,
+            minzoom: tj.minzoom,
+            maxzoom: tj.maxzoom,
+            bounds: tj.bounds,
             attribution: 'Sunset Visibility, USGS DEM',
           },
         },
@@ -396,18 +395,18 @@
 
     // --- Recolorization Controller ----------------------------------------
     let recolorVersion = 0;
-    function applyAzimuth(encoded) {
-      if (encoded === currentEncodedAz) return;     // no change → no rework, no fetch
-      currentEncodedAz = encoded;
+    function applyAzimuth(bitIndex) {
+      if (bitIndex === currentBitIndex) return;   // no change → no rework, no fetch
+      currentBitIndex = bitIndex;
       const source = map.getSource('visibility');
       if (!source) return;
       recolorVersion++;
-      source.setTiles([`visibility://tiles/{z}/{x}/{y}.png?v=${recolorVersion}`]);
+      source.setTiles([`visibility://tiles/{z}/{x}/{y}.bin?v=${recolorVersion}`]);
     }
 
-    // Recompute the Sunset Azimuth from the Selected date and the map center.
+    // Recompute the visibility bit index from the Selected date and the map center.
     function recolorizeFromInputs() {
-      applyAzimuth(encodedAzForDate(dateToValue(currentDate), map.getCenter().lat));
+      applyAzimuth(bitIndexForDate(dateToValue(currentDate), map.getCenter().lat));
     }
 
     // ═══ Visibility verdict sampling (Selected Observer → cached tile) ══════
@@ -418,10 +417,8 @@
       return (0.5 - Math.log((1 + s) / (1 - s)) / (4 * Math.PI)) * (2 ** z);
     }
 
-    // Read the encoded R/G/A at a coordinate from whatever visibility tile is
-    // already cached, preferring the highest-resolution (largest z) hit. The
-    // cache holds exactly the tiles MapLibre rendered, so we never have to guess
-    // the source-vs-map zoom offset — we just probe the z levels we actually have.
+    // Return the raw pixel bytes for a lat/lng from whatever cached .bin tile
+    // covers it, preferring the highest-resolution (largest z) hit.
     function sampleVisibility(lat, lng) {
       const zs = new Set();
       for (const url of rawCache.keys()) {
@@ -432,24 +429,24 @@
         const gx = lngToTileX(lng, z);
         const gy = latToTileY(lat, z);
         const x = Math.floor(gx), y = Math.floor(gy);
-        const tile = rawCache.get(`tiles/${z}/${x}/${y}.png`);
+        const tile = rawCache.get(`tiles/${z}/${x}/${y}.bin`);
         if (!tile) continue;
-        const px = Math.min(tile.width - 1, Math.floor((gx - x) * tile.width));
-        const py = Math.min(tile.height - 1, Math.floor((gy - y) * tile.height));
-        const idx = (py * tile.width + px) * 3;
-        return { r: tile.raw[idx], g: tile.raw[idx + 1], a: tile.raw[idx + 2] };
+        const { tileSize, bytesPerPixel, raw } = tile;
+        const px = Math.min(tileSize - 1, Math.floor((gx - x) * tileSize));
+        const py = Math.min(tileSize - 1, Math.floor((gy - y) * tileSize));
+        return raw.subarray((py * tileSize + px) * bytesPerPixel,
+                             (py * tileSize + px + 1) * bytesPerPixel);
       }
       return null;
     }
 
-    // 'Visible' / 'Blocked' for a valid land pixel (A=255); null otherwise — the
-    // tile collapses ocean / never-visible / no-data into A=0 (ADR-0003), so we
-    // only assert a verdict where the data is unambiguous.
+    // 'Visible' / 'Blocked' for a land pixel; null for water / no-data.
     function visibilityVerdict(lat, lng) {
-      const s = sampleVisibility(lat, lng);
-      if (!s || s.a !== 255) return null;
-      const encoded = encodedAzForDate(dateToValue(currentDate), lat);
-      return s.r <= encoded && s.g >= encoded ? 'Visible' : 'Blocked';
+      const pixelBytes = sampleVisibility(lat, lng);
+      if (!pixelBytes) return null;
+      const rgba = colorizeBitmaskPixel(pixelBytes, layout.flagBitIndex, currentBitIndex);
+      if (rgba[3] === 0) return null;
+      return rgba[0] === 255 ? 'Visible' : 'Blocked';
     }
 
     // ═══ Sun almanac helpers (SunCalc; azimuth from the project module) ═════
@@ -730,6 +727,7 @@
     // initial paint
     renderDatePill();
     renderPillCoords();
+  })();
   </script>
 </body>
 </html>

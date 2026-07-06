@@ -113,7 +113,7 @@ python3 -m http.server 8080
 cmake --build build-release && \
 ./build-release/src/trace_ray/trace_ray \
   --config config/pipeline.conf \
-  --lat 37.7374 --lon -122.5082 --azimuth 301 \
+  --lat 37.5986 --lon -122.5151 --azimuth 301 \
   --bbox 38.075699804065565 -123.20240716979919 37.30303188098905 -121.79394046484315 \
   --before 25 --after 70
 ```
