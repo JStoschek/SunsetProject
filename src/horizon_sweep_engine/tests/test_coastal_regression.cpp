@@ -13,10 +13,10 @@
 //
 // Design
 // ------
-//   • FakeCoast: a meridional coast at lon = −122.511° (just west of Ocean
-//     Beach's shoreline at ≈ −122.508°).  The fake crossing is returned for
-//     any bearing, with the crossing latitude matching the seed latitude so
-//     the geometry stays exact.
+//   • FakeWater: a meridional coast at lon = −122.511° (just west of Ocean
+//     Beach's shoreline at ≈ −122.508°).  The engine's own march finds the
+//     crossing (ADR-0014): the first sample at or east of the coast meridian,
+//     so the crossing sits within one sample spacing of the exact coast.
 //
 //   • FakeDEM: all terrain at 0 m above sea level.  On flat zero terrain the
 //     running_max_slope stays ≤ 0, so any cell within the curvature horizon
@@ -26,7 +26,7 @@
 //     Bearing = (300 + 180) % 360 = 120° (SE, ocean → land direction).
 //
 //   • Key cell: Ocean Beach (lon ≈ −122.508°).  This cell is ≈ 265 m east of
-//     the FakeCoast crossing, well inside the curvature horizon.  With flat
+//     the fake coast crossing, well inside the curvature horizon.  With flat
 //     terrain it must be visible.  If along_c is mis-computed (or if the
 //     crossing is shifted east past Ocean Beach), the cell's `dist` becomes
 //     negative and it stays false — the exact b350d3e failure mode.
@@ -65,10 +65,10 @@ constexpr double kCoastLon = -122.511;
 // curvature horizon.  Must be visible at az = 300° with flat terrain.
 constexpr double kOceanBeachLon = -122.508;
 
-// Curvature horizon for 0 m terrain with default config:
-// horizon_reference_offset_m (1 km) + march_distance s.t. drop ≈ eye_height:
-// d² (1-2k)/(2R) = eye → d ≈ 5.4 km from origin → 4.4 km past the coast.
-// Use 4 km as a safe-visible and 6 km as a safe-hidden distance.
+// Curvature horizon for 0 m terrain with the default config (offset 2.5 km,
+// eye 2 m): d² (1-2k)/(2R) = eye → d ≈ 5.9 km from the Horizon Reference →
+// ≈ 3.4 km past the coast. 1 km and 7 km are safely INTERIOR to the visible
+// and hidden regions (re-anchored per ADR-0014: never assert on a boundary).
 constexpr double kNearDistKm = 1.0;  // safely within horizon (dist_from_coast)
 constexpr double kFarDistKm  = 7.0;  // safely beyond horizon
 
@@ -105,9 +105,9 @@ int main() {
 
     // ── Ocean Beach cell is visible at az = 300° ────────────────────────────
     //
-    // FakeCoast at kCoastLon (−122.511°) places Ocean Beach 265 m inland.
-    // With flat 0 m terrain the running_max_slope stays ≤ 0 and the
-    // curvature drop at d ≈ 1265 m is only ≈ 0.074 m — well below eye
+    // The coast at kCoastLon (−122.511°) places Ocean Beach 265 m inland.
+    // With flat 0 m terrain the running_max_slope stays at 0 and the
+    // curvature drop at d ≈ 2.8 km is only ≈ 0.45 m — well below eye
     // height.  The cell must be visible.
     //
     // b350d3e regression guard: if any future change to the coast march (or to
@@ -116,8 +116,8 @@ int main() {
     // engine skips it, leaving it false.
     {
         FakeDEM   dem([](double, double) { return 0.0f; });
-        FakeCoast coast(kCoastLon);
-        HorizonSweepEngine engine(dem, coast, config,
+        FakeWater water(kCoastLon);
+        HorizonSweepEngine engine(dem, water, config,
                                   box.min_lat, box.max_lat,
                                   box.min_lon, box.max_lon);
         AzimuthSlice slice;
@@ -155,8 +155,8 @@ int main() {
     // Within the curvature horizon, a flat 0 m cell must be visible.
     {
         FakeDEM   dem([](double, double) { return 0.0f; });
-        FakeCoast coast(kCoastLon);
-        HorizonSweepEngine engine(dem, coast, config,
+        FakeWater water(kCoastLon);
+        HorizonSweepEngine engine(dem, water, config,
                                   box.min_lat, box.max_lat,
                                   box.min_lon, box.max_lon);
         AzimuthSlice slice;
@@ -176,12 +176,12 @@ int main() {
     }
 
     // ── Far-inland cell (7 km inland) is hidden by Earth curvature ──────────
-    // At 7 km from coast (d ≈ 8 km from Horizon Reference) the curvature/
-    // refraction drop is ≈ 3.7 m > 1.7 m eye height → cell must be hidden.
+    // At 7 km from coast (d ≈ 9.5 km from Horizon Reference) the curvature/
+    // refraction drop is ≈ 5.2 m > 2 m eye height → cell must be hidden.
     {
         FakeDEM   dem([](double, double) { return 0.0f; });
-        FakeCoast coast(kCoastLon);
-        HorizonSweepEngine engine(dem, coast, config,
+        FakeWater water(kCoastLon);
+        HorizonSweepEngine engine(dem, water, config,
                                   box.min_lat, box.max_lat,
                                   box.min_lon, box.max_lon);
         AzimuthSlice slice;
@@ -209,8 +209,8 @@ int main() {
         FakeDEM dem_with_ridge([](double, double lon) {
             return (lon >= kCoastLon && lon <= kCoastLon + 0.0002) ? 100.0f : 0.0f;
         });
-        FakeCoast coast(kCoastLon);
-        HorizonSweepEngine engine(dem_with_ridge, coast, config,
+        FakeWater water(kCoastLon);
+        HorizonSweepEngine engine(dem_with_ridge, water, config,
                                   box.min_lat, box.max_lat,
                                   box.min_lon, box.max_lon);
         AzimuthSlice slice;
@@ -226,8 +226,8 @@ int main() {
     //
     // When the coast is near the western edge (lon ≈ −122.97°) and the bearing
     // is diagonal (120°), the seed for j_min is ~38.02°N — well outside the
-    // box.  FakeCoast returns a crossing at Ec ≈ 0 and large Nc, making
-    // along_c ≈ −12 000 m.  Phase 1 then needs ~1 200 more profile entries
+    // box.  The march finds a crossing at Ec ≈ 0 and large Nc, making
+    // along_c ≈ −12 000 m.  The verdict march then needs ~1 200 more entries
     // than the pre-allocation (sized for along_c = 0) provides.  Without the
     // per-ray resize guard this is a heap-buffer-overflow caught by
     // AddressSanitizer.
@@ -237,15 +237,15 @@ int main() {
     {
         constexpr double kWestCoastLon = -122.97;
         FakeDEM   dem([](double, double) { return 0.0f; });
-        FakeCoast coast(kWestCoastLon);
-        HorizonSweepEngine engine(dem, coast, config,
+        FakeWater water(kWestCoastLon);
+        HorizonSweepEngine engine(dem, water, config,
                                   box.min_lat, box.max_lat,
                                   box.min_lon, box.max_lon);
         AzimuthSlice slice;
         engine.compute_slice(kAz, slice);  // heap-buffer-overflow without the fix
 
         // Cell ~500 m east of the coast (kWestCoastLon + 0.005°), row 5.
-        // FakeCoast gives a crossing near lat 37.747° for this ray;
+        // The march finds a crossing near lat 37.747° for this ray;
         // dist ≈ 460 m → curvature drop ≈ 0.13 m < eye height → visible.
         const int inland_col = col_for_lon(config, box, kWestCoastLon + 0.005);
         assert(inland_col >= 0 && inland_col < slice.width &&

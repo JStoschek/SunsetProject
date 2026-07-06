@@ -16,13 +16,13 @@ StripResult sweep_strip(StripSources&         sources,
                         double min_lon,       double max_lon) {
     const int nw = pool.worker_count();
 
-    // One engine per worker (each has its own profile_ buffer) bound to that
-    // worker's own elevation/coast sources.
+    // One engine per worker (each has its own verdict buffer) bound to that
+    // worker's own elevation/water sources.
     std::vector<std::unique_ptr<HorizonSweepEngine>> engines;
     engines.reserve(nw);
     for (int i = 0; i < nw; ++i)
         engines.push_back(std::make_unique<HorizonSweepEngine>(
-            sources.dem_for_worker(i), sources.ocean_for_worker(i),
+            sources.dem_for_worker(i), sources.water_for_worker(i),
             config, strip_min_lat, strip_max_lat, min_lon, max_lon));
 
     // Size accumulator from engine dimensions — no serial slice needed.

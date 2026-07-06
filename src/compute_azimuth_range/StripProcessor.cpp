@@ -26,8 +26,7 @@ StripResult StripProcessor::process(double strip_min_lat, double strip_max_lat) 
         config_.strip_tilt_margin_deg);
     const FrozenDEM   frozen_dem   = dem_.freeze(work);
     const FrozenOcean frozen_ocean = omr_.freeze(work);
-    FrozenStripSources sources(frozen_dem, frozen_ocean, config_,
-                               pool_.worker_count());
+    FrozenStripSources sources(frozen_dem, frozen_ocean, pool_.worker_count());
 
     // Lock-free parallel azimuth sweep over the frozen caches.
     StripResult result = sweep_strip(sources, config_, pool_,

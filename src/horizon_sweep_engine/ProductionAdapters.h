@@ -15,19 +15,13 @@ private:
     DEMTileLoader& loader_;
 };
 
-// `bearing` is the ocean→land march bearing = (sunset_az + 180) mod 360.
-// Delegates directly to OceanMaskRasterizer::ocean_origin_for_ray, which
-// accepts the same convention.
-struct OceanAdapter : CoastlineFinder {
-    OceanAdapter(OceanMaskRasterizer& omr, const PipelineConfig& config)
-        : omr_(omr), config_(config) {}
-    OceanOriginResult ocean_origin_for_ray(double bearing,
-                                           double lat, double lon) override {
-        return omr_.ocean_origin_for_ray(bearing, lat, lon,
-                                         config_.coast_march_step_km,
-                                         config_.coast_march_max_km);
+// Point water query over the Ocean Mask. The engine folds coast-finding into
+// its per-ray march (ADR-0014), so this is the only ocean access it needs.
+struct WaterAdapter : WaterQuery {
+    explicit WaterAdapter(OceanMaskRasterizer& omr) : omr_(omr) {}
+    bool is_water(double lat, double lon) override {
+        return omr_.is_water(lat, lon);
     }
 private:
     OceanMaskRasterizer& omr_;
-    const PipelineConfig& config_;
 };

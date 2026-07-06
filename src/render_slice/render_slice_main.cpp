@@ -1,18 +1,22 @@
 // render_slice — diagnostic tool that runs the Horizon Sweep Engine for a
-// single sunset azimuth and writes a single-band GeoTIFF (1 = visible, 0 =
-// not visible). Load it in QGIS or any GIS tool; overlay a basemap to see
-// which pixels can see the sunset over the ocean horizon.
+// single sunset azimuth and writes two artifacts:
+//   • a single-band GeoTIFF (1 = visible, 0 = not visible) for QGIS/GIS
+//     inspection over a basemap, and
+//   • a grayscale PNG (255 = visible, 0 = not) for quick eyeballing and
+//     byte-diffing between runs — the primary whole-map QA artifact for the
+//     forward-sampled engine (ADR-0014).
 //
 // Usage:
 //   render_slice --config <pipeline.conf> \
 //                --bbox <top_lat> <top_lon> <bot_lat> <bot_lon> \
 //                --azimuth <degrees> \
 //                [--output <path>]   # default: slice_<az>deg.tif
+//                [--png <path>]      # default: <output with .png extension>
 //
 // The bounding box is given as top-left (north-west) followed by bottom-right
 // (south-east): top_lat > bot_lat, top_lon < bot_lon (for western hemisphere).
-// The western edge of the box must lie offshore the mainland so the coast
-// finder has open water to start from (see ADR-0008).
+// The western edge of the box must lie offshore the mainland so each ray's
+// coast march has open water to start from (see ADR-0008).
 
 #include <cmath>
 #include <cstdint>
@@ -26,6 +30,7 @@
 #include <ogr_spatialref.h>
 
 #include "OsmWaterPolygonSource.h"
+#include "PngWrite.h"
 #include "ProductionAdapters.h"
 #include "PipelineConfig.h"
 
@@ -39,6 +44,7 @@ struct Args {
     double      bot_lat   = 0, bot_lon   = 0;
     double      azimuth   = 0;
     std::string output_path;
+    std::string png_path;
     bool        has_bbox  = false;
     bool        has_az    = false;
 };
@@ -48,7 +54,7 @@ static void usage(const char* argv0) {
         "Usage: %s --config <pipeline.conf>\n"
         "          --bbox <top_lat> <top_lon> <bot_lat> <bot_lon>\n"
         "          --azimuth <degrees>\n"
-        "          [--output <path>]\n", argv0);
+        "          [--output <path>] [--png <path>]\n", argv0);
 }
 
 static Args parse_args(int argc, char* argv[]) {
@@ -68,6 +74,8 @@ static Args parse_args(int argc, char* argv[]) {
             a.has_az  = true;
         } else if (arg == "--output" && i + 1 < argc) {
             a.output_path = argv[++i];
+        } else if (arg == "--png" && i + 1 < argc) {
+            a.png_path = argv[++i];
         } else {
             std::fprintf(stderr, "Unknown argument: %s\n", arg.c_str());
         }
@@ -106,6 +114,14 @@ int main(int argc, char* argv[]) {
         std::snprintf(buf, sizeof(buf), "slice_%.0fdeg.tif", a.azimuth);
         output_path = buf;
     }
+    std::string png_path = a.png_path;
+    if (png_path.empty()) {
+        // Default: sit next to the GeoTIFF, .png extension.
+        png_path = output_path;
+        const auto dot = png_path.rfind('.');
+        if (dot != std::string::npos) png_path.erase(dot);
+        png_path += ".png";
+    }
 
     // ── Load config and wire up the engine ───────────────────────────────
     const PipelineConfig config = PipelineConfig::load(a.config_path);
@@ -118,9 +134,9 @@ int main(int argc, char* argv[]) {
                                                 config.osm_inland_water_path),
         config.ocean_lru_capacity);
     DEMAdapter          dem_adapter(dem_loader);
-    OceanAdapter        ocean_adapter(omr, config);
+    WaterAdapter        water_adapter(omr);
 
-    HorizonSweepEngine engine(dem_adapter, ocean_adapter, config,
+    HorizonSweepEngine engine(dem_adapter, water_adapter, config,
                               min_lat, max_lat, min_lon, max_lon);
 
     std::printf("Computing azimuth slice at %.1f° over bbox "
@@ -185,5 +201,24 @@ int main(int argc, char* argv[]) {
 
     std::printf("Wrote %s  (%d × %d pixels)\n",
                 output_path.c_str(), slice.width, slice.height);
+
+    // ── Write PNG (eyeball / diff artifact) ──────────────────────────────
+    // Same north-up orientation as the GeoTIFF; visible pixels white.
+    std::vector<uint8_t> png_buf(
+        static_cast<std::size_t>(slice.width) * slice.height);
+    for (int png_row = 0; png_row < slice.height; ++png_row) {
+        const int slice_row = slice.height - 1 - png_row;
+        for (int col = 0; col < slice.width; ++col) {
+            png_buf[static_cast<std::size_t>(png_row) * slice.width + col] =
+                slice.visible[
+                    static_cast<std::size_t>(slice_row) * slice.width + col]
+                    ? 255 : 0;
+        }
+    }
+    if (!write_gray_png(png_path, slice.width, slice.height, png_buf)) {
+        std::fprintf(stderr, "Error: could not write '%s'.\n", png_path.c_str());
+        return 1;
+    }
+    std::printf("Wrote %s\n", png_path.c_str());
     return 0;
 }

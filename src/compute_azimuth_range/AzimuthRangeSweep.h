@@ -17,7 +17,7 @@ struct StripResult {
     int bytes_per_pixel = 0;
 };
 
-/// Supplies each pool worker with its own elevation/coast abstractions for a
+/// Supplies each pool worker with its own elevation/water abstractions for a
 /// strip.  Production hands out per-worker FrozenDEMView / FrozenOceanView
 /// (lock-free reads over the strip's frozen working set — see FrozenStripSources);
 /// tests hand out a shared stateless fake.  `worker` is in [0, worker_count).
@@ -25,14 +25,14 @@ struct StripResult {
 struct StripSources {
     virtual ~StripSources() = default;
     virtual ElevationSource& dem_for_worker(int worker)   = 0;
-    virtual CoastlineFinder& ocean_for_worker(int worker) = 0;
+    virtual WaterQuery&      water_for_worker(int worker) = 0;
 };
 
 /// Run the full azimuth sweep for one latitude strip and return the per-pixel
 /// min/max azimuth range.  Dispatches each azimuth-slice computation to `pool`
 /// (one task per worker, each claiming azimuths from a shared counter).  Each
 /// worker reads through its own sources (see StripSources), so the hot
-/// get_elevation / coast-finding paths carry no locks or shared mutation.
+/// get_elevation / is_water paths carry no locks or shared mutation.
 StripResult sweep_strip(StripSources&         sources,
                         const PipelineConfig& config,
                         ThreadPool&           pool,

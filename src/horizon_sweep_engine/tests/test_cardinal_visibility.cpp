@@ -1,7 +1,11 @@
 // Behavioural specification for HorizonSweepEngine::compute_slice at the
 // cardinal sunset azimuth (270° = due west). Tests drive the engine ONLY
-// through compute_slice with FakeDEM / FakeCoast — they never inspect
+// through compute_slice with FakeDEM / FakeWater — they never inspect
 // running_max_slope, call private methods, or assert on query counts.
+//
+// Assertions sit safely INTERIOR to visible/blocked regions: under the
+// forward-sampled grid (ADR-0014) output pixels inherit their nearest
+// sample's verdict, so visibility boundaries may wobble by up to ~1 cell.
 //
 // PIPELINE_CONF_PATH is injected by CMake so the tests stay config-driven.
 #include "Fakes.h"
@@ -50,8 +54,8 @@ int main() {
     // ~0.9 km past the coast is inside that horizon; one ~40 km inland is not.
     {
         FakeDEM  dem([](double, double) { return 0.0f; });  // flat sea level
-        FakeCoast coast(-122.95);                           // meridional coast
-        HorizonSweepEngine engine(dem, coast, config,
+        FakeWater water(-122.95);                           // meridional coast
+        HorizonSweepEngine engine(dem, water, config,
                                   box.min_lat, box.max_lat,
                                   box.min_lon, box.max_lon);
 
@@ -74,8 +78,8 @@ int main() {
     // where no observer can stand; it must stay false regardless of terrain.
     {
         FakeDEM   dem([](double, double) { return 0.0f; });
-        FakeCoast coast(-122.95);
-        HorizonSweepEngine engine(dem, coast, config,
+        FakeWater water(-122.95);
+        HorizonSweepEngine engine(dem, water, config,
                                   box.min_lat, box.max_lat,
                                   box.min_lon, box.max_lon);
 
@@ -101,8 +105,8 @@ int main() {
         FakeDEM dem([](double, double lon) {
             return (lon >= -122.928 && lon <= -122.927) ? 100.0f : 0.0f;
         });
-        FakeCoast coast(-122.95);
-        HorizonSweepEngine engine(dem, coast, config,
+        FakeWater water(-122.95);
+        HorizonSweepEngine engine(dem, water, config,
                                   box.min_lat, box.max_lat,
                                   box.min_lon, box.max_lon);
 
@@ -137,8 +141,8 @@ int main() {
             if (lon >= -122.9163) return 200.0f;                    // shelf from ~3 km inland
             return 0.0f;
         });
-        FakeCoast coast(-122.95);
-        HorizonSweepEngine engine(dem, coast, config,
+        FakeWater water(-122.95);
+        HorizonSweepEngine engine(dem, water, config,
                                   box.min_lat, box.max_lat,
                                   box.min_lon, box.max_lon);
 
@@ -146,7 +150,9 @@ int main() {
         engine.compute_slice(kSunsetWest, slice);
 
         const int row          = 5;
-        const int observer_col = col_for_lon(config, box, -122.9163);  // shelf leading edge
+        // A few cells INSIDE the shelf (not its leading edge): the pixel must
+        // gather from a sample that is itself on the shelf (ADR-0014 wobble).
+        const int observer_col = col_for_lon(config, box, -122.9158);
         const int flat_col     = col_for_lon(config, box, -122.9220);  // flat, behind ridge
 
         assert(pixel(slice, row, observer_col) &&
@@ -179,8 +185,8 @@ int main() {
                "flat-earth (no curvature) would mark this sea-level observer visible");
 
         FakeDEM   dem([](double, double) { return 0.0f; });
-        FakeCoast coast(coast_lon);
-        HorizonSweepEngine engine(dem, coast, config,
+        FakeWater water(coast_lon);
+        HorizonSweepEngine engine(dem, water, config,
                                   box.min_lat, box.max_lat,
                                   box.min_lon, box.max_lon);
 
@@ -195,20 +201,22 @@ int main() {
     }
 
     // ── Eye-height offset lifts a pixel over the horizon ────────────────
-    // At a distance where a 0 m pixel is just beyond the curvature horizon
-    // (hidden), ground sitting at eye_height (1.7 m) is visible: its own bare
-    // ground enters the slope profile, and the eye-height offset added only at
-    // the visibility check carries it over. Two identical runs, same coast,
-    // same column, same distance — the only difference is the terrain height.
+    // At a distance where a 0 m pixel is beyond the curvature horizon (hidden,
+    // with margin), ground raised by 1.7 m is visible: its own bare ground
+    // enters the slope profile, and the eye-height offset added only at the
+    // visibility check carries it over. Two identical runs, same coast, same
+    // column, same distance — the only difference is the terrain height. The
+    // distance is chosen so BOTH verdicts hold with a comfortable margin
+    // (≈0.7 m each way), well clear of the sample-quantisation wobble.
     {
         const double coast_lon = -122.95;
-        const double obs_lon    = -122.888138;  // ~5.5 km inland, just past horizon
-        FakeCoast coast(coast_lon);
+        const double obs_lon    = -122.9005;   // ~4.4 km inland
+        FakeWater water(coast_lon);
         const int row     = 5;
         const int obs_col = col_for_lon(config, box, obs_lon);
 
         FakeDEM flat([](double, double) { return 0.0f; });
-        HorizonSweepEngine flat_engine(flat, coast, config,
+        HorizonSweepEngine flat_engine(flat, water, config,
                                        box.min_lat, box.max_lat,
                                        box.min_lon, box.max_lon);
         AzimuthSlice flat_slice;
@@ -220,7 +228,7 @@ int main() {
         FakeDEM raised([obs_lon](double, double lon) {
             return lon >= obs_lon - 0.001 ? 1.7f : 0.0f;  // ground at eye height
         });
-        HorizonSweepEngine raised_engine(raised, coast, config,
+        HorizonSweepEngine raised_engine(raised, water, config,
                                          box.min_lat, box.max_lat,
                                          box.min_lon, box.max_lon);
         AzimuthSlice raised_slice;
@@ -241,8 +249,8 @@ int main() {
     {
         const double coast_lon = -122.95;
         FakeDEM   dem([](double, double) { return 0.0f; });
-        FakeCoast coast(coast_lon);
-        HorizonSweepEngine engine(dem, coast, config,
+        FakeWater water(coast_lon);
+        HorizonSweepEngine engine(dem, water, config,
                                   box.min_lat, box.max_lat,
                                   box.min_lon, box.max_lon);
 
@@ -251,10 +259,13 @@ int main() {
 
         const int row        = 5;
         const int coast_col  = col_for_lon(config, box, coast_lon);
-        const int near_col   = col_for_lon(config, box, -122.910);  // ~3.5 km, inside horizon
-        for (int col = coast_col + 1; col <= near_col; ++col) {
+        const int near_col   = col_for_lon(config, box, -122.918);  // ~2.8 km, inside horizon
+        // Start a few columns inland: the march finds the crossing at sample
+        // resolution, so the first land pixel or two may still gather a
+        // seaward verdict (accepted ≤1-cell wobble, ADR-0014).
+        for (int col = coast_col + 3; col <= near_col; ++col) {
             assert(pixel(slice, row, col) &&
-                   "flat land from the coast out to the horizon must be visible");
+                   "flat land from just past the coast out to the horizon must be visible");
         }
         std::puts("PASS: open sea raises no obstruction; coastal flat land is visible");
     }
@@ -265,8 +276,8 @@ int main() {
     // and each call zeroes stale state before refilling.
     {
         FakeDEM   dem([](double, double) { return 0.0f; });
-        FakeCoast coast(-122.95);
-        HorizonSweepEngine engine(dem, coast, config,
+        FakeWater water(-122.95);
+        HorizonSweepEngine engine(dem, water, config,
                                   box.min_lat, box.max_lat,
                                   box.min_lon, box.max_lon);
 
@@ -313,12 +324,12 @@ int main() {
         const int row     = 5;
         const int far_col = col_for_lon(config, box, -122.50);  // ~40 km inland
         FakeDEM   dem([](double, double) { return 0.0f; });
-        FakeCoast coast(-122.95);
+        FakeWater water(-122.95);
 
         AzimuthSlice slice;
 
         {  // default config: far pixel is hidden
-            HorizonSweepEngine engine(dem, coast, config,
+            HorizonSweepEngine engine(dem, water, config,
                                       box.min_lat, box.max_lat,
                                       box.min_lon, box.max_lon);
             engine.compute_slice(kSunsetWest, slice);
@@ -329,7 +340,7 @@ int main() {
         {  // raise eye height: the same pixel becomes visible
             PipelineConfig tall = config;
             tall.observer_eye_height_m = 1000.0;
-            HorizonSweepEngine engine(dem, coast, tall,
+            HorizonSweepEngine engine(dem, water, tall,
                                       box.min_lat, box.max_lat,
                                       box.min_lon, box.max_lon);
             engine.compute_slice(kSunsetWest, slice);
@@ -340,7 +351,7 @@ int main() {
         {  // cancel curvature via refraction coefficient: also becomes visible
             PipelineConfig flat_optics = config;
             flat_optics.refraction_coefficient_k = 0.5;  // (1 - 2k) = 0 -> no drop
-            HorizonSweepEngine engine(dem, coast, flat_optics,
+            HorizonSweepEngine engine(dem, water, flat_optics,
                                       box.min_lat, box.max_lat,
                                       box.min_lon, box.max_lon);
             engine.compute_slice(kSunsetWest, slice);

@@ -80,13 +80,12 @@ PipelineConfig PipelineConfig::load(const std::string& path) {
     c.coast_obstruction_skip_m   = optional_double(kv, "coast_obstruction_skip_m", 0.0);
     c.cell_per_degree            = require_double(kv, "cell_per_degree");
     c.meters_per_degree_lat      = require_double(kv, "meters_per_degree_lat");
-    c.march_step_m               = require_double(kv, "march_step_m");
+    c.sample_spacing_arcsec      = optional_double(kv, "sample_spacing_arcsec", 1.0 / 3.0);
     c.azimuth_min_deg            = require_double(kv, "azimuth_min_deg");
     c.azimuth_max_deg            = require_double(kv, "azimuth_max_deg");
     c.azimuth_step_deg           = require_double(kv, "azimuth_step_deg");
     c.strip_height_deg           = require_double(kv, "strip_height_deg");
     c.strip_tilt_margin_deg      = optional_double(kv, "strip_tilt_margin_deg", 0.65);
-    c.coast_march_step_km        = require_double(kv, "coast_march_step_km");
     c.coast_march_max_km         = require_double(kv, "coast_march_max_km");
     c.worker_threads             = require_int(kv, "worker_threads");
     c.dem_lru_capacity           = require_int(kv, "dem_lru_capacity");

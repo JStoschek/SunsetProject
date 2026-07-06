@@ -1,14 +1,14 @@
 // End-to-end integration test: HorizonSweepEngine wired to the real production
-// adapters (DEMAdapter / OceanAdapter) backed by a synthetic GeoTIFF fixture
+// adapters (DEMAdapter / WaterAdapter) backed by a synthetic GeoTIFF fixture
 // and the SF-Bay GSHHG coastline dataset.
 //
 // Design:
 //   - Two synthetic 0 m tiles (n38w123, n38w122) cover the test box and force
 //     at least one tile-boundary crossing, exercising bilinear interpolation
 //     across the seam and LRU eviction when capacity < tile count.
-//   - The real OceanMaskRasterizer marches along azimuth 90° (the bearing for
-//     sunset azimuth 270°) from the open Pacific and finds the SF-peninsula
-//     coast, driving the actual GSHHG coastline logic.
+//   - The engine's own march queries the real OceanMaskRasterizer's is_water
+//     along bearing 90° (sunset azimuth 270°) from the open Pacific and finds
+//     the SF-peninsula coast, driving the actual GSHHG coastline logic.
 //   - Visibility assertions use the dynamically-found coast longitude so the
 //     test is not brittle to GSHHG resolution differences.
 //
@@ -132,8 +132,15 @@ int main() {
     // Approximate seed lat for the middle test row (row 5 at 10800 cpd).
     const double seed_lat = kMinLat + (kTestRow + 0.5) / config.cell_per_degree;
     OceanMaskRasterizer omr_pre(GSHHG_FULL_PATH);
+    // March at the engine's own sample spacing (ADR-0014): the engine steps
+    // is_water every ~10 m, so a coarse reference march could step over a
+    // small rock or spit the engine's crossing lands on.
+    const double sample_step_km =
+        (config.sample_spacing_arcsec / 3600.0) * config.meters_per_degree_lat
+        / 1000.0;
     const OceanOriginResult cross =
-        omr_pre.ocean_origin_for_ray(bearing, seed_lat, kMinLon);
+        omr_pre.ocean_origin_for_ray(bearing, seed_lat, kMinLon,
+                                     sample_step_km, config.coast_march_max_km);
     const double coast_lon = cross.coast_lon;
     assert(coast_lon > kMinLon && coast_lon < kMaxLon &&
            "SF-peninsula coast must fall inside the test box");
@@ -143,9 +150,9 @@ int main() {
         DEMTileLoader         dem_loader(fixture_dir.string(), config.dem_lru_capacity);
         OceanMaskRasterizer   omr(GSHHG_FULL_PATH, config.ocean_lru_capacity);
         DEMAdapter            dem_adapter(dem_loader);
-        OceanAdapter          ocean_adapter(omr, config);
+        WaterAdapter          water_adapter(omr);
 
-        HorizonSweepEngine engine(dem_adapter, ocean_adapter, config,
+        HorizonSweepEngine engine(dem_adapter, water_adapter, config,
                                   kMinLat, kMaxLat, kMinLon, kMaxLon);
         AzimuthSlice slice;
         engine.compute_slice(kAz, slice);
@@ -208,9 +215,9 @@ int main() {
         DEMTileLoader         dem_loader(fixture_dir.string(), tight.dem_lru_capacity);
         OceanMaskRasterizer   omr(GSHHG_FULL_PATH, tight.ocean_lru_capacity);
         DEMAdapter            dem_adapter(dem_loader);
-        OceanAdapter          ocean_adapter(omr, config);
+        WaterAdapter          water_adapter(omr);
 
-        HorizonSweepEngine engine(dem_adapter, ocean_adapter, tight,
+        HorizonSweepEngine engine(dem_adapter, water_adapter, tight,
                                   kMinLat, kMaxLat, kMinLon, kMaxLon);
         AzimuthSlice slice;
         engine.compute_slice(kAz, slice);

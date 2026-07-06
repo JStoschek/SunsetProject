@@ -3,7 +3,7 @@
 // Runs sweep_strip over a small synthetic bbox twice — once with worker_threads=1
 // (serial) and once with worker_threads=4 (parallel) — and asserts byte-for-byte
 // identical packed bitmask buffers.  Uses FakeDEM (flat 0 m terrain) and
-// FakeCoast (meridional coast), so the test needs no file I/O and no real DEM
+// FakeWater (meridional coast), so the test needs no file I/O and no real DEM
 // or GSHHG data.
 //
 // This is the agreed regression gate against the class of silent-corruption bugs
@@ -41,23 +41,23 @@ PipelineConfig make_config(int worker_threads) {
     return cfg;
 }
 
-// Hands every worker the same stateless fake (FakeDEM/FakeCoast are inherently
+// Hands every worker the same stateless fake (FakeDEM/FakeWater are inherently
 // thread-safe), so this gate isolates the parallel sweep's determinism from the
 // frozen-cache machinery (which is unit-tested separately).
 struct SharedStripSources : StripSources {
     ElevationSource& dem;
-    CoastlineFinder& ocean;
-    SharedStripSources(ElevationSource& d, CoastlineFinder& o) : dem(d), ocean(o) {}
+    WaterQuery&      water;
+    SharedStripSources(ElevationSource& d, WaterQuery& w) : dem(d), water(w) {}
     ElevationSource& dem_for_worker(int)   override { return dem; }
-    CoastlineFinder& ocean_for_worker(int) override { return ocean; }
+    WaterQuery&      water_for_worker(int) override { return water; }
 };
 
 }  // namespace
 
 int main() {
     FakeDEM   dem([](double, double) { return 0.0f; });
-    FakeCoast coast(kCoastLon);
-    SharedStripSources sources(dem, coast);
+    FakeWater water(kCoastLon);
+    SharedStripSources sources(dem, water);
 
     const PipelineConfig cfg1 = make_config(1);
     const PipelineConfig cfg4 = make_config(4);

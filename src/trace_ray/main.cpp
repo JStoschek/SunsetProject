@@ -3,10 +3,10 @@
 // Wires the production DEM + OSM-ocean loaders to the engine over a tiny bbox
 // around a target point, enables the engine's built-in RayTrace, and runs one
 // azimuth slice. The engine then prints, for the single parallel ray that
-// carries the target pixel, the exact Phase-1/Phase-2 quantities at every
-// 1/3-arc-second march step — elevation, is_water, running max slope, the
-// observer slope, and the visibility verdict — from `--before` steps seaward of
-// the coastline crossing through `--after` steps inland.
+// carries the target pixel, every march sample — elevation, is_water, running
+// max slope, the observer slope, and the STORED visibility verdict — from
+// `--before` samples seaward of the coastline crossing through `--after`
+// samples inland (ADR-0014: a ray is a plain list of yes/no points).
 //
 // This is a debugging tool: it does NOT re-derive the math, it observes what the
 // engine actually computes (the recorded values come straight out of the live
@@ -102,9 +102,9 @@ int main(int argc, char* argv[]) {
         config.ocean_lru_capacity);
 
     DEMAdapter   dem_adapter(dem_loader);
-    OceanAdapter ocean_adapter(omr, config);
+    WaterAdapter water_adapter(omr);
 
-    HorizonSweepEngine engine(dem_adapter, ocean_adapter, config,
+    HorizonSweepEngine engine(dem_adapter, water_adapter, config,
                               min_lat, max_lat, min_lon, max_lon);
 
     HorizonSweepEngine::RayTrace trace;
@@ -121,14 +121,15 @@ int main(int argc, char* argv[]) {
     AzimuthSlice slice;
     engine.compute_slice(azimuth, slice);
 
-    // Report the engine's final verdict for the exact target pixel (Phase 2).
+    // Report the engine's final verdict for the exact target pixel (gathered
+    // from its nearest sample).
     const double cell_deg = 1.0 / config.cell_per_degree;
     const int col = static_cast<int>(std::lround((target_lon - min_lon) / cell_deg));
     const int row = static_cast<int>(std::lround((target_lat - min_lat) / cell_deg));
     if (col >= 0 && col < slice.width && row >= 0 && row < slice.height) {
         const bool vis =
             slice.visible[static_cast<std::size_t>(row) * slice.width + col];
-        std::printf("Phase-2 verdict for target pixel (row %d, col %d): %s\n",
+        std::printf("Gathered verdict for target pixel (row %d, col %d): %s\n",
                     row, col, vis ? "VISIBLE" : "NOT visible");
     } else {
         std::printf("Target pixel fell outside the trace bbox grid.\n");

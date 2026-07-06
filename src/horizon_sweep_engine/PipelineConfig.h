@@ -22,7 +22,11 @@ struct PipelineConfig {
     // ── Grid ────────────────────────────────────────────────────────────
     double cell_per_degree;            ///< cells per degree (1/3 arc-second = 10800)
     double meters_per_degree_lat;      ///< flat-earth metres per degree of latitude
-    double march_step_m;               ///< Phase-1 along-ray sample step (metres)
+    double sample_spacing_arcsec;      ///< Visibility Sample Grid spacing (ADR-0014):
+                                       ///< drives BOTH the perp ray spacing and the
+                                       ///< along march step (square in the ray frame).
+                                       ///< Lower = sharper visibility boundaries,
+                                       ///< linearly more compute.
 
     // ── Azimuth sweep ───────────────────────────────────────────────────
     double azimuth_min_deg;            ///< inclusive lower sunset azimuth
@@ -35,8 +39,10 @@ struct PipelineConfig {
                                        ///< working set for the ray tilt (ADR-0007)
 
     // ── Coast finding ───────────────────────────────────────────────────
-    double coast_march_step_km;        ///< eastward is_water march step
-    double coast_march_max_km;         ///< give-up distance for the coast search
+    double coast_march_max_km;         ///< per-ray give-up distance for the in-march
+                                       ///< coast search (ADR-0014); a ray with no
+                                       ///< coast within this range yields no
+                                       ///< visible samples
 
     // ── Parallelism ──────────────────────────────────────────────────────
     int    worker_threads;             ///< pool size; 0 = std::thread::hardware_concurrency()

@@ -1,7 +1,9 @@
 // Behavioural specification for HorizonSweepEngine::compute_slice at NON-cardinal
-// sunset azimuths (the rotated-frame two-phase gather, ADR-0007). Tests drive the
-// engine ONLY through compute_slice with FakeDEM / FakeCoast — they never inspect
-// running_max_slope, call private methods, or assert on query counts.
+// sunset azimuths (the rotated-frame gather, ADR-0007 / ADR-0014). Tests drive the
+// engine ONLY through compute_slice with FakeDEM / FakeWater — they never inspect
+// running_max_slope, call private methods, or assert on query counts. Assertions
+// sit interior to visible/blocked regions (≤1-cell boundary wobble is accepted
+// under the forward-sampled grid).
 //
 // PIPELINE_CONF_PATH is injected by CMake so the tests stay config-driven.
 #include "Fakes.h"
@@ -63,8 +65,8 @@ int main() {
         const double sin_b        = std::sin(deg2rad(beta_tilted));
 
         FakeDEM   dem([](double, double) { return 0.0f; });  // flat sea level
-        FakeCoast coast(coast_lon);
-        HorizonSweepEngine engine(dem, coast, config,
+        FakeWater water(coast_lon);
+        HorizonSweepEngine engine(dem, water, config,
                                   box.min_lat, box.max_lat,
                                   box.min_lon, box.max_lon);
 
@@ -109,8 +111,8 @@ int main() {
             return (std::fabs(lon - lon_pk) < 0.0005 &&
                     std::fabs(lat - lat_pk) < 0.0005) ? 500.0f : 0.0f;
         });
-        FakeCoast coast(coast_lon);
-        HorizonSweepEngine engine(dem, coast, config,
+        FakeWater water(coast_lon);
+        HorizonSweepEngine engine(dem, water, config,
                                   box.min_lat, box.max_lat,
                                   box.min_lon, box.max_lon);
         AzimuthSlice slice;
@@ -141,31 +143,36 @@ int main() {
     // ── The ray partition leaves no holes ───────────────────────────────
     // round(perp/s) assigns every in-bounds pixel to exactly one ray, so a
     // tilted slice must have no unwritten gaps. On flat terrain each row's
-    // visible pixels form one contiguous band — ocean to the west, then visible
-    // land out to the curvature horizon. A hole in the gather (an unwritten
-    // pixel, left false) would split that band; we assert it stays contiguous.
+    // visible pixels form one band — ocean to the west, then visible land out
+    // to the curvature horizon. A hole in the gather (an unwritten pixel, left
+    // false) would puncture that band's INTERIOR. The band's edges may wobble
+    // by ~1 cell where adjacent rays quantise their coast crossings and
+    // horizons differently (ADR-0014), so we assert only the interior — a few
+    // columns clear of each edge — is solid.
     {
         constexpr double kTilted = 285.0;
         FakeDEM   dem([](double, double) { return 0.0f; });  // flat sea level
-        FakeCoast coast(coast_lon);
-        HorizonSweepEngine engine(dem, coast, config,
+        FakeWater water(coast_lon);
+        HorizonSweepEngine engine(dem, water, config,
                                   box.min_lat, box.max_lat,
                                   box.min_lon, box.max_lon);
         AzimuthSlice slice;
         engine.compute_slice(kTilted, slice);
 
         for (int row : {40, 200, 360, 500}) {
-            int first = -1, last = -1, count = 0;
+            int first = -1, last = -1;
             for (int col = 0; col < slice.width; ++col) {
                 if (pixel(slice, row, col)) {
                     if (first < 0) first = col;
                     last = col;
-                    ++count;
                 }
             }
-            assert(count > 0 && "each row has a visible coastal band");
-            assert(last - first + 1 == count &&
-                   "the visible band is contiguous: the partition leaves no holes");
+            assert(first >= 0 && "each row has a visible coastal band");
+            assert(last - first > 10 && "the visible band spans many columns");
+            for (int col = first + 3; col <= last - 3; ++col) {
+                assert(pixel(slice, row, col) &&
+                       "the band interior is solid: the partition leaves no holes");
+            }
         }
         std::puts("PASS: the ray partition leaves no holes across a tilted slice");
     }
