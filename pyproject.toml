@@ -18,11 +18,12 @@ test = ["pytest>=7"]
 
 [project.scripts]
 encode_tiles = "encode_tiles.cli:main"
+run_boxes = "run_boxes.driver:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
-include = ["encode_tiles*"]
+include = ["encode_tiles*", "run_boxes*"]
 
 [tool.pytest.ini_options]
-testpaths = ["src/encode_tiles/tests"]
+testpaths = ["src/encode_tiles/tests", "src/run_boxes/tests"]
 pythonpath = ["src"]
