@@ -50,3 +50,4 @@ __pycache__/
 
 # Profiling output
 profile.json.gz
+azimuth.json           # captured Firefox profiler trace, not pipeline output
