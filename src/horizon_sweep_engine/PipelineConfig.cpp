@@ -87,6 +87,7 @@ PipelineConfig PipelineConfig::load(const std::string& path) {
     c.strip_height_deg           = require_double(kv, "strip_height_deg");
     c.strip_tilt_margin_deg      = optional_double(kv, "strip_tilt_margin_deg", 0.65);
     c.coast_march_max_km         = require_double(kv, "coast_march_max_km");
+    c.west_edge_max_land_frac    = optional_double(kv, "west_edge_max_land_frac", 0.05);
     c.worker_threads             = require_int(kv, "worker_threads");
     c.dem_lru_capacity           = require_int(kv, "dem_lru_capacity");
     c.ocean_lru_capacity         = require_int(kv, "ocean_lru_capacity");

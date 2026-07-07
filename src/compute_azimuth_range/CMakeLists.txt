@@ -84,6 +84,21 @@ target_link_libraries(test_bitmask_geotiff_writer PRIVATE
 )
 add_test(NAME BitmaskGeoTiffWriter COMMAND test_bitmask_geotiff_writer)
 
+add_executable(test_west_edge_preflight tests/test_west_edge_preflight.cpp)
+target_include_directories(test_west_edge_preflight PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
+)
+target_link_libraries(test_west_edge_preflight PRIVATE horizon_sweep_engine)
+target_compile_definitions(test_west_edge_preflight PRIVATE
+    PIPELINE_CONF_PATH="${PIPELINE_CONF}"
+)
+add_test(NAME WestEdgePreflight COMMAND test_west_edge_preflight)
+# WestEdgePreflight pins the ADR-0015 mis-anchored-box guard: an offshore west
+# edge passes, an inland one hard-fails, the tolerated land fraction
+# (west_edge_max_land_frac) is exercised on both sides at the exact threshold,
+# and the failure names the offending latitude range. FakeWater + an analytic
+# notch fake, no file I/O.
+
 add_executable(test_serial_vs_parallel tests/test_serial_vs_parallel.cpp)
 target_link_libraries(test_serial_vs_parallel PRIVATE azimuth_range_sweep)
 target_include_directories(test_serial_vs_parallel PRIVATE

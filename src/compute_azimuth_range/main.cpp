@@ -40,8 +40,10 @@
 #include "OceanMaskRasterizer.h"
 #include "OsmWaterPolygonSource.h"
 #include "PipelineConfig.h"
+#include "ProductionAdapters.h"
 #include "StripProcessor.h"
 #include "ThreadPool.h"
+#include "WestEdgePreflight.h"
 
 // Wire-format version stamped into the GeoTIFF metadata (ADR-0013). The encoder
 // and frontend reject a packing they don't understand by checking this.
@@ -143,9 +145,42 @@ int main(int argc, char* argv[]) {
     std::printf("Output grid: %d × %d pixels (cell = %.6f°)\n",
                 total_width, total_height, cell_deg);
 
-    // ── Pre-create the output GeoTIFF (north-up, EPSG:4326, packed uint8 mask) ─
     GDALAllRegister();
 
+    // ── Shared production loaders (one instance, reused per strip) ────────
+    // Used serially: to freeze each strip's working set before its parallel
+    // region, and for water-disambiguation after it.  Workers never touch these
+    // directly — they read through the per-strip frozen views.
+    DEMTileLoader       dem_loader(config.dem_dir,   config.dem_lru_capacity);
+    OceanMaskRasterizer omr(
+        std::make_unique<OsmWaterPolygonSource>(config.osm_water_polygons_path,
+                                                config.osm_inland_water_path),
+        config.ocean_lru_capacity);
+
+    // ── West-edge preflight (ADR-0015) ─────────────────────────────────────
+    // Every ray seeds at the western edge and marches east (ADR-0008), so a
+    // box whose west edge is not offshore would sweep to plausible-looking
+    // garbage that the encoder cannot detect. Hard-error before any output
+    // exists; a small land fraction (config knob) tolerates a stray rock.
+    {
+        WaterAdapter water(omr);
+        const WestEdgeCheck west = check_west_edge_offshore(
+            water, min_lat, max_lat, min_lon, total_height,
+            config.west_edge_max_land_frac);
+        if (!west.offshore) {
+            std::fprintf(stderr,
+                "Error: the box's western edge (lon %.4f) is not offshore: "
+                "%.1f%% of %d seed samples are land (max %.1f%%), "
+                "land spans lat [%.4f, %.4f]. Nudge the western edge seaward "
+                "of that range (ADR-0008).\n",
+                min_lon, west.land_fraction * 100.0, west.total_samples,
+                config.west_edge_max_land_frac * 100.0,
+                west.land_min_lat, west.land_max_lat);
+            return 1;
+        }
+    }
+
+    // ── Pre-create the output GeoTIFF (north-up, EPSG:4326, packed uint8 mask) ─
     // The packing math (bit_count, bytes_per_pixel) comes from the single
     // BitLayout wire contract; the writer stamps the azimuth/format metadata.
     const BitLayout layout = BitLayout::from_config(
@@ -160,16 +195,6 @@ int main(int argc, char* argv[]) {
         std::fprintf(stderr, "Error: %s\n", e.what());
         return 1;
     }
-
-    // ── Shared production loaders (one instance, reused per strip) ────────
-    // Used serially: to freeze each strip's working set before its parallel
-    // region, and for water-disambiguation after it.  Workers never touch these
-    // directly — they read through the per-strip frozen views.
-    DEMTileLoader       dem_loader(config.dem_dir,   config.dem_lru_capacity);
-    OceanMaskRasterizer omr(
-        std::make_unique<OsmWaterPolygonSource>(config.osm_water_polygons_path,
-                                                config.osm_inland_water_path),
-        config.ocean_lru_capacity);
 
     // ── Thread pool: created once, reused across all strips ───────────────
     config.worker_threads = nw;  // store resolved count for sweep_strip

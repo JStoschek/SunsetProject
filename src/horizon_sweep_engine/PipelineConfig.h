@@ -44,6 +44,11 @@ struct PipelineConfig {
                                        ///< coast within this range yields no
                                        ///< visible samples
 
+    // ── West-edge preflight (ADR-0015) ──────────────────────────────────
+    double west_edge_max_land_frac;    ///< tolerated fraction of land samples on the
+                                       ///< box's western-edge column before the run
+                                       ///< hard-errors as mis-anchored (ADR-0008)
+
     // ── Parallelism ──────────────────────────────────────────────────────
     int    worker_threads;             ///< pool size; 0 = std::thread::hardware_concurrency()
 
