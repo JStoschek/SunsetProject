@@ -50,16 +50,23 @@ def _transparent_pixel() -> bytes:
     return bytes(BYTES_PER_PIXEL)
 
 
-def _make_fixture(path: Path) -> None:
+def _make_fixture(
+    path: Path,
+    bounds: tuple[float, float, float, float] = (SRC_WEST, SRC_SOUTH, SRC_EAST, SRC_NORTH),
+    land_row: int = LAND_ROW,
+    land_col: int = LAND_COL,
+    azimuth_min_deg: float = AZ_MIN,
+) -> None:
     """Write a 4×4 10-band uint8 GeoTIFF with production azimuth metadata."""
     land = _land_pixel()
     bands = []
     for band_idx in range(BYTES_PER_PIXEL):
         arr = np.zeros((SRC_HEIGHT, 4), dtype=np.uint8)
-        arr[LAND_ROW, LAND_COL] = land[band_idx]
+        arr[land_row, land_col] = land[band_idx]
         bands.append(arr)
 
-    transform = from_bounds(SRC_WEST, SRC_SOUTH, SRC_EAST, SRC_NORTH, 4, 4)
+    west, south, east, north = bounds
+    transform = from_bounds(west, south, east, north, 4, 4)
     with rasterio.open(
         path,
         "w",
@@ -74,7 +81,7 @@ def _make_fixture(path: Path) -> None:
         for i, arr in enumerate(bands, start=1):
             dst.write(arr, i)
         dst.update_tags(
-            azimuth_min_deg=str(AZ_MIN),
+            azimuth_min_deg=str(azimuth_min_deg),
             azimuth_max_deg=str(AZ_MAX),
             azimuth_step_deg=str(AZ_STEP),
             bit_count=str(BIT_COUNT),
@@ -251,3 +258,138 @@ def test_pyramid_coarse_pixel_contains_land(tmp_path: Path) -> None:
     assert pixel_bytes[_FLAG_BYTE] != 0, (
         f"coarse pixel flag byte is 0 — land child was not ORed in: {pixel_bytes.hex()}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Multi-box merge (ADR-0015): several --input GeoTIFFs → one tileset.
+# ---------------------------------------------------------------------------
+
+# Box B stacks south of box A (same lon range) with a 2°-lat deliberate
+# overlap: A spans lat 0–4, B spans lat -2–2.
+B_SOUTH, B_NORTH = -2.0, 2.0
+B_BOUNDS = (SRC_WEST, B_SOUTH, SRC_EAST, B_NORTH)
+
+
+def _read_pixel(out_dir: Path, zoom: int, lon: float, lat: float) -> bytes:
+    """The merged tileset's bytes at (lon, lat); zeros if the tile is absent."""
+    x, y = _lonlat_to_3857(lon, lat)
+    tx, ty, px, py = _world_to_tile(x, y, zoom)
+    tile_path = out_dir / str(zoom) / str(tx) / f"{ty}.bin"
+    if not tile_path.is_file():
+        return _transparent_pixel()
+    with gzip.open(tile_path, "rb") as f:
+        raw = f.read()
+    offset = (py * TILE_SIZE + px) * BYTES_PER_PIXEL
+    return bytes(raw[offset : offset + BYTES_PER_PIXEL])
+
+
+def test_multi_input_merges_into_one_tileset(tmp_path: Path) -> None:
+    """Two overlapping boxes → one pyramid, union bounds, both boxes' land."""
+    box_a = tmp_path / "a.tif"
+    box_b = tmp_path / "b.tif"
+    out_dir = tmp_path / "tiles"
+    _make_fixture(box_a)  # land at lat 3.5, lon 0.5 — A's exclusive north
+    _make_fixture(box_b, bounds=B_BOUNDS, land_row=3)  # lat -1.5 — B's exclusive south
+
+    rc = main(
+        [
+            "--input", str(box_a),
+            "--input", str(box_b),
+            "--output-dir", str(out_dir),
+            "--min-zoom", str(ZOOM),
+            "--max-zoom", str(ZOOM),
+        ]
+    )
+    assert rc == 0
+
+    # One tilejson whose bounds are the union of both boxes.
+    tj = json.loads((out_dir / "tilejson.json").read_text())
+    west, south, east, north = tj["bounds"]
+    assert west == pytest.approx(SRC_WEST, abs=1e-6)
+    assert south == pytest.approx(B_SOUTH, abs=1e-6)
+    assert east == pytest.approx(SRC_EAST, abs=1e-6)
+    assert north == pytest.approx(SRC_NORTH, abs=1e-6)
+    assert tj["format_version"] == FORMAT_VERSION
+    assert tj["azimuth_min_deg"] == pytest.approx(AZ_MIN)
+
+    # Each box's exclusive land pixel survives with verbatim bytes.
+    assert _read_pixel(out_dir, ZOOM, 0.5, 3.5) == _land_pixel()
+    assert _read_pixel(out_dir, ZOOM, 0.5, -1.5) == _land_pixel()
+
+
+def test_overlap_pixel_comes_from_the_deeper_box(tmp_path: Path) -> None:
+    """In the overlap, the loser's bytes must not leak into the merge.
+
+    A's land sits on its own bottom row (lat 0.5) — the half of the overlap
+    band nearer B's centre, where B (transparent there) wins.  The merged
+    pixel must be transparent: B's verdict verbatim, not A's.
+    """
+    box_a = tmp_path / "a.tif"
+    box_b = tmp_path / "b.tif"
+    out_dir = tmp_path / "tiles"
+    _make_fixture(box_a, land_row=3)  # land at lat 0.5, deep in B's half
+    _make_fixture(box_b, bounds=B_BOUNDS)  # land at lat 1.5, deep in A's half
+
+    rc = main(
+        [
+            "--input", str(box_a),
+            "--input", str(box_b),
+            "--output-dir", str(out_dir),
+            "--min-zoom", str(ZOOM),
+            "--max-zoom", str(ZOOM),
+        ]
+    )
+    assert rc == 0
+
+    # Both land pixels fall in the half of the overlap owned by the OTHER
+    # (transparent-there) box, so both must be dropped.
+    assert _read_pixel(out_dir, ZOOM, 0.5, 0.5) == _transparent_pixel()
+    assert _read_pixel(out_dir, ZOOM, 0.5, 1.5) == _transparent_pixel()
+
+
+def test_disjoint_boxes_leave_transparent_gap(tmp_path: Path) -> None:
+    """Boxes with a gap: both render, the gap between them stays transparent."""
+    box_a = tmp_path / "a.tif"
+    box_b = tmp_path / "b.tif"
+    out_dir = tmp_path / "tiles"
+    far_south_bounds = (SRC_WEST, -12.0, SRC_EAST, -8.0)
+    _make_fixture(box_a)  # land at lat 3.5
+    _make_fixture(box_b, bounds=far_south_bounds)  # land at lat -8.5
+
+    rc = main(
+        [
+            "--input", str(box_a),
+            "--input", str(box_b),
+            "--output-dir", str(out_dir),
+            "--min-zoom", str(ZOOM),
+            "--max-zoom", str(ZOOM),
+        ]
+    )
+    assert rc == 0
+
+    assert _read_pixel(out_dir, ZOOM, 0.5, 3.5) == _land_pixel()
+    assert _read_pixel(out_dir, ZOOM, 0.5, -8.5) == _land_pixel()
+    # Mid-gap: no box covers lat -2–-8; the pixel must be transparent.
+    assert _read_pixel(out_dir, ZOOM, 0.5, -5.0) == _transparent_pixel()
+
+
+def test_format_contract_mismatch_exits_nonzero(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Inputs disagreeing on the azimuth window must abort the encode."""
+    box_a = tmp_path / "a.tif"
+    box_b = tmp_path / "b.tif"
+    _make_fixture(box_a)
+    _make_fixture(box_b, bounds=B_BOUNDS, azimuth_min_deg=AZ_MIN - 10.0)
+
+    rc = main(
+        [
+            "--input", str(box_a),
+            "--input", str(box_b),
+            "--output-dir", str(tmp_path / "tiles"),
+            "--min-zoom", str(ZOOM),
+            "--max-zoom", str(ZOOM),
+        ]
+    )
+    assert rc != 0
+    assert "format contract" in capsys.readouterr().err
