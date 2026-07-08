@@ -1,11 +1,14 @@
-// Behavioural specification for check_west_edge_offshore (ADR-0015): the
-// engine's guard against mis-anchored boxes. Tests drive the function ONLY
-// through the WaterQuery seam with analytic fakes — a meridional coast
-// (FakeWater) for the all-water / all-land cases, and a latitude-notch fake
-// to exercise the tolerated-land-fraction threshold on both sides.
+// Behavioural specification for the run preflights: check_west_edge_offshore
+// (ADR-0015, the guard against mis-anchored boxes) and
+// check_coast_march_covers_box (the guard against a coast-march give-up
+// shorter than the box — the silent Moss Landing blackout). West-edge tests
+// drive the function ONLY through the WaterQuery seam with analytic fakes —
+// a meridional coast (FakeWater) for the all-water / all-land cases, and a
+// latitude-notch fake to exercise the tolerated-land-fraction threshold on
+// both sides. The coverage check is pure closed-form geometry.
 //
 // PIPELINE_CONF_PATH is injected by CMake so the tests stay config-driven:
-// the threshold under test is the real west_edge_max_land_frac knob.
+// the thresholds under test are the real config knobs.
 #include "Fakes.h"
 #include "PipelineConfig.h"
 #include "WestEdgePreflight.h"
@@ -108,6 +111,64 @@ int main() {
         std::puts("PASS: over-threshold land fails and names the notch's latitude range");
     }
 
-    std::puts("All west-edge preflight tests passed.");
+    // ── Coast-march coverage: the production box needs > 100 km ──────────
+    // The Moss Landing regression, closed form: the production box spans
+    // 1.722° of longitude (~155 km at its south edge), and at the steepest
+    // swept azimuth the along-ray span approaches 200 km. A 100 km give-up
+    // must FAIL this box (it silently blacked out the back of Monterey Bay);
+    // the check's own required_km must pass it.
+    {
+        const double b_min_lat = 36.1442, b_min_lon = -123.2651,
+                     b_max_lon = -121.5431;
+        const CoastMarchCheck fail = check_coast_march_covers_box(
+            b_min_lat, b_min_lon, b_max_lon, config.meters_per_degree_lat,
+            config.azimuth_min_deg, config.azimuth_max_deg, 100.0);
+        assert(!fail.covers &&
+               "a 100 km give-up must fail the 1.7-degree production box");
+        assert(fail.required_km > 150.0 && fail.required_km < 250.0 &&
+               "required span must be the ~200 km closed form");
+
+        const CoastMarchCheck pass = check_coast_march_covers_box(
+            b_min_lat, b_min_lon, b_max_lon, config.meters_per_degree_lat,
+            config.azimuth_min_deg, config.azimuth_max_deg,
+            fail.required_km + 1.0);
+        assert(pass.covers && "a give-up above required_km must pass");
+        std::puts("PASS: coast-march coverage fails the production box at 100 km");
+    }
+
+    // ── Coast-march coverage: cardinal-only window needs exactly the width ─
+    // With a single due-west azimuth (bearing 90°) the along-ray span IS the
+    // box width; the boundary is sharp on both sides.
+    {
+        const double b_min_lat = 36.0, b_min_lon = -123.0, b_max_lon = -122.0;
+        const double width_km = 1.0 * config.meters_per_degree_lat *
+                                std::cos(b_min_lat * M_PI / 180.0) / 1000.0;
+        const CoastMarchCheck just_under = check_coast_march_covers_box(
+            b_min_lat, b_min_lon, b_max_lon, config.meters_per_degree_lat,
+            270.0, 270.0, width_km - 0.5);
+        const CoastMarchCheck just_over = check_coast_march_covers_box(
+            b_min_lat, b_min_lon, b_max_lon, config.meters_per_degree_lat,
+            270.0, 270.0, width_km + 0.5);
+        assert(!just_under.covers && "give-up under the box width must fail");
+        assert(just_over.covers && "give-up over the box width must pass");
+        assert(std::fabs(just_over.required_km - width_km) < 0.01 &&
+               "cardinal required span equals the box width");
+        std::puts("PASS: cardinal coverage boundary sits exactly at the box width");
+    }
+
+    // ── The current config covers the current production box ─────────────
+    // Config-driven guard: if either the box in boxes.json grows or
+    // coast_march_max_km shrinks, this trips before a run silently would.
+    {
+        const CoastMarchCheck r = check_coast_march_covers_box(
+            36.1442, -123.2651, -121.5431, config.meters_per_degree_lat,
+            config.azimuth_min_deg, config.azimuth_max_deg,
+            config.coast_march_max_km);
+        assert(r.covers &&
+               "config coast_march_max_km must cover the production box");
+        std::puts("PASS: the shipped config covers the production box");
+    }
+
+    std::puts("All preflight tests passed.");
     return 0;
 }

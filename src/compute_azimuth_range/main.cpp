@@ -180,6 +180,28 @@ int main(int argc, char* argv[]) {
         }
     }
 
+    // ── Coast-march coverage preflight ─────────────────────────────────────
+    // A give-up distance smaller than the box's worst-case along-ray span
+    // silently blacks out every pixel whose coastline crossing lies beyond it
+    // (e.g. the back of a deep bay). Hard-error before any output exists.
+    {
+        const CoastMarchCheck reach = check_coast_march_covers_box(
+            min_lat, min_lon, max_lon, config.meters_per_degree_lat,
+            config.azimuth_min_deg, config.azimuth_max_deg,
+            config.coast_march_max_km);
+        if (!reach.covers) {
+            std::fprintf(stderr,
+                "Error: coast_march_max_km = %.1f km cannot cover this box: "
+                "the farthest in-box pixel lies %.1f km along-ray from its "
+                "west-edge seed at the steepest swept azimuth. Rays past the "
+                "give-up yield no samples and their pixels stay black at "
+                "every azimuth. Raise coast_march_max_km to at least %.0f.\n",
+                config.coast_march_max_km, reach.required_km,
+                std::ceil(reach.required_km));
+            return 1;
+        }
+    }
+
     // ── Pre-create the output GeoTIFF (north-up, EPSG:4326, packed uint8 mask) ─
     // The packing math (bit_count, bytes_per_pixel) comes from the single
     // BitLayout wire contract; the writer stamps the azimuth/format metadata.
