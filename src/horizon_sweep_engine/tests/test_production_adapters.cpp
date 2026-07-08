@@ -158,16 +158,20 @@ int main() {
         engine.compute_slice(kAz, slice);
 
         // --- Ocean pixels west of the crossing stay false ---
+        // Stay a few columns clear of the crossing: the gather snaps pixels
+        // within one sample spacing seaward of along_c onto sample 0
+        // (accepted ≤1-cell boundary wobble, ADR-0014), so the column right
+        // at the reference crossing may legitimately be visible.
         const int coast_col = col_for_lon(config, kMinLon, coast_lon);
-        for (int col = 0; col < coast_col; ++col) {
+        for (int col = 0; col < coast_col - 10; ++col) {
             assert(!pixel(slice, kTestRow, col) &&
                    "ocean pixel seaward of the coast crossing must be false");
         }
         std::puts("PASS: ocean pixels seaward of crossing are all false");
 
         // --- Near-coast pixel (within curvature horizon) is visible ---
-        // 2.5 km past the coast is well inside the ~5.4 km curvature horizon
-        // for 0 m terrain with default config.
+        // 2.5 km past the coast is well inside the ≈5.9 km curvature horizon
+        // sqrt(eye/c) for 0 m terrain with default config (ADR-0016).
         const double near_m   = 2500.0;
         const double deg_east = near_m / (config.meters_per_degree_lat *
                                           std::cos(kMinLat * M_PI / 180.0));

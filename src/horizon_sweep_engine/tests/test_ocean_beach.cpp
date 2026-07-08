@@ -61,7 +61,6 @@ int main() {
 
     const double mpd    = config.meters_per_degree_lat;
     const double mE     = mpd * std::cos(deg2rad(box.min_lat));
-    const double offset = config.horizon_reference_offset_m;
     const double eye    = config.observer_eye_height_m;
     const double c      = (1.0 - 2.0 * config.refraction_coefficient_k)
                           / (2.0 * config.earth_radius_m);
@@ -75,15 +74,16 @@ int main() {
     const double band_lo_m = 100.0, band_hi_m = 400.0;
 
     // ── Setup sanity (closed form, config-driven) ────────────────────────
-    // Worst-case berm obstruction slope: the earliest possible berm sample
-    // (d = offset). Worst-case band observer: the far edge of the band at the
-    // slant distance 400 m east / sin(bearing), plus a sample of quantisation.
-    const double berm_slope = (berm_h - offset * offset * c) / offset;
-    const double d_far      = offset + band_hi_m / sin_b + 15.0;
-    const double band_slope = (eye - d_far * d_far * c) / d_far;
+    // Horizon Reach comparison (ADR-0016). Worst-case berm obstruction: the
+    // earliest possible berm sample (x = 0 at the crossing). Worst-case band
+    // observer: the far edge of the band at the slant distance
+    // 400 m east / sin(bearing), plus a sample of quantisation.
+    const double berm_reach = std::sqrt(berm_h / c);
+    const double x_far      = band_hi_m / sin_b + 15.0;
+    const double band_reach = std::sqrt(eye / c) - x_far;
     CHECK(config.coast_obstruction_skip_m >= 0.0, "setup: config loaded");
-    CHECK(band_slope > berm_slope * 1.05,
-          "setup: the band must clear the sub-eye-height berm with margin");
+    CHECK(band_reach > berm_reach + 10.0,
+          "setup: the band must out-reach the sub-eye-height berm with margin");
 
     // ── Run the slice ─────────────────────────────────────────────────────
     FakeDEM dem([&](double, double lon) -> float {

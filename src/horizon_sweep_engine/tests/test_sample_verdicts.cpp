@@ -6,12 +6,13 @@
 // (set_grid_dump + sample_grid()).
 //
 // Expected verdicts come from scenario-specific CLOSED FORMS (curvature
-// horizon d = sqrt(eye/c), obstruction slope comparisons), not from
-// re-running the engine's recurrence. Every feature edge is placed half a
-// sample spacing away from the march lattice so sample->terrain assignment is
-// unambiguous, and every asserted sample carries a wide physical margin.
+// horizon x = sqrt(eye/c) from the crossing, Horizon Reach comparisons —
+// ADR-0016), not from re-running the engine's recurrence. Every feature edge
+// is placed half a sample spacing away from the march lattice so
+// sample->terrain assignment is unambiguous, and every asserted sample
+// carries a wide physical margin.
 //
-// Scenarios (PRD engine-forward-sampled-grid §8.3):
+// Scenarios (PRD engine-forward-sampled-grid §8.3, re-anchored per ADR-0016):
 //   1. flat ocean -> flat land: visible exactly out to the curvature horizon;
 //   2. single tall ridge: lee samples blocked (and the crest sees over itself);
 //   3. two ridges (near shorter, far taller): visible, blocked, visible AGAIN
@@ -19,8 +20,11 @@
 //   4. a low berm below eye height does not block the flat behind it (and the
 //      same berm above eye height does);
 //   5. curvature: the same low ridge blocks its lee when near, but placed far
-//      enough out that d²c swallows it (h_adj < 0) it stops blocking —
-//      the d²c term, closed form.
+//      enough out that x²c swallows it (reach < 0) it stops blocking —
+//      the curvature term, closed form;
+//   6. Long Ridge regression (ADR-0016): a HIGH observer far inland sees the
+//      ocean horizon OVER a low coastal hill that hides the near-shore water
+//      — the secant model wrongly blocked this class of observer.
 //
 // The engines here run with coast_obstruction_skip_m = 0 so the obstruction
 // math is exercised undamped; the foreshore skip is a separate tunable.
@@ -50,13 +54,13 @@ double deg2rad(double d) { return d * kPi / 180.0; }
 constexpr double kSunsetWest = 270.0;  // bearing 90°: the march runs due east
 constexpr double kCoastLon   = -122.95;
 
-// Single-row box: one output row, so ray j = 0 carries it. 0.15° of longitude
-// gives ~9 km of land beyond the coast — room for the far-ridge scenarios.
+// Single-row box: one output row, so ray j = 0 carries it. 0.25° of longitude
+// gives ~22 km of land beyond the coast — room for the far-inland scenarios.
 struct Box {
     double min_lat = 37.0;
     double max_lat = 37.0 + 1.0 / 10800.0;  // exactly one row
     double min_lon = -123.0;
-    double max_lon = -122.85;
+    double max_lon = -122.70;
 };
 
 // Everything analytic about one cardinal ray, derived from the config.
@@ -64,7 +68,6 @@ struct RayMath {
     double s;        ///< sample spacing (m)
     double dlon;     ///< march longitude step (deg) — constant at bearing 90
     double c;        ///< curvature coefficient (1-2k)/2R
-    double offset;   ///< Horizon Reference offset (d at the coast crossing)
     double eye;
     long   i_coast;  ///< march index (from the western seed) of the crossing
 
@@ -73,7 +76,6 @@ struct RayMath {
         dlon   = s / (cfg.meters_per_degree_lat * std::cos(deg2rad(box.min_lat)));
         c      = (1.0 - 2.0 * cfg.refraction_coefficient_k)
                  / (2.0 * cfg.earth_radius_m);
-        offset = cfg.horizon_reference_offset_m;
         eye    = cfg.observer_eye_height_m;
         // The engine seeds ray 0 at (min_lat, min_lon) and steps dlon east per
         // sample; the crossing is the first sample at or east of the coast.
@@ -81,7 +83,8 @@ struct RayMath {
             std::ceil((kCoastLon - box.min_lon) / dlon - 1e-9));
     }
 
-    double d_of(std::size_t k) const { return offset + static_cast<double>(k) * s; }
+    /// Along-ray distance of sample k inland from the coastline crossing.
+    double x_of(std::size_t k) const { return static_cast<double>(k) * s; }
 
     // Longitude bounds of the terrain feature occupying ray samples
     // [k_lo, k_hi] (indexed from the crossing), edges half a lattice step out.
@@ -92,12 +95,18 @@ struct RayMath {
         return box.min_lon + (static_cast<double>(i_coast + k_hi) + 0.5) * dlon;
     }
 
-    // Obstruction slope of a feature of height h whose FIRST sample is k
-    // (the running maximum a plateau contributes — later samples of the same
-    // height have strictly smaller bare slope).
-    double feature_slope(double h, long k) const {
-        const double d = d_of(static_cast<std::size_t>(k));
-        return (h - d * d * c) / d;
+    // Horizon Reach (ADR-0016) of a feature of height h whose FIRST sample is
+    // k: reach = sqrt(h/c) − x, how far seaward of the crossing its own
+    // horizon extends. The first sample of a plateau is the running maximum
+    // it contributes — later samples of the same height reach strictly less.
+    double feature_reach(double h, long k) const {
+        return std::sqrt(h / c) - x_of(static_cast<std::size_t>(k));
+    }
+
+    // An observer's Horizon Reach at sample k on ground of height h (the eye
+    // height is added at the check, ADR-0016).
+    double observer_reach(double h, long k) const {
+        return std::sqrt((h + eye) / c) - x_of(static_cast<std::size_t>(k));
     }
 };
 
@@ -121,15 +130,16 @@ int main() {
 
     CHECK(m.c > 0.0, "setup: curvature coefficient must be positive (k < 0.5)");
     CHECK(m.eye > 0.0, "setup: eye height must be positive");
-    const double d_horizon = std::sqrt(m.eye / m.c);  // flat-land curvature horizon
-    CHECK(d_horizon > m.offset + 50.0 * m.s,
+    const double x_horizon = std::sqrt(m.eye / m.c);  // flat-land curvature horizon
+    CHECK(x_horizon > 50.0 * m.s,
           "setup: the horizon must lie many samples past the coast");
 
     // ── 1. Flat ocean -> flat land: visible exactly to the curvature horizon ─
-    // Closed form: running_max stays 0 on 0 m terrain, so sample k is visible
-    // iff eye >= d_k² c, i.e. d_k <= sqrt(eye/c). Samples whose margin is
-    // within 0.1 mm of the boundary are skipped (config could in principle
-    // land the boundary on a lattice point).
+    // Closed form: running_max_reach stays 0 on 0 m terrain (the crossing's
+    // sea-surface baseline), so sample k is visible iff eye >= x_k² c, i.e.
+    // x_k <= sqrt(eye/c). Samples whose margin is within 0.1 mm of the
+    // boundary are skipped (config could in principle land the boundary on a
+    // lattice point).
     {
         FakeDEM dem([](double, double) { return 0.0f; });
         HorizonSweepEngine engine(dem, water, config,
@@ -144,8 +154,8 @@ int main() {
 
         int flips = 0;
         for (std::size_t k = 0; k < ray.verdicts.size(); ++k) {
-            const double d      = m.d_of(k);
-            const double margin = m.eye - d * d * m.c;
+            const double x      = m.x_of(k);
+            const double margin = m.eye - x * x * m.c;
             if (std::fabs(margin) < 1e-4) continue;  // boundary sample: skip
             const bool expected = margin > 0.0;
             CHECK(ray.verdicts[k] == (expected ? 1 : 0),
@@ -173,15 +183,15 @@ int main() {
         AzimuthSlice slice;
         const auto& ray = run_ray(engine, slice);
 
-        // Setup: the ridge towers over anything eye height can reach at any
-        // in-box distance, so every lee sample must be blocked.
-        const double ridge_slope = m.feature_slope(H, k1);
-        CHECK(ridge_slope > m.eye / m.offset,
-              "setup: ridge slope exceeds the steepest possible flat-lee slope");
+        // Setup: the ridge out-reaches anything eye height can reach on the
+        // flat at any in-box distance, so every lee sample must be blocked.
+        const double ridge_reach = m.feature_reach(H, k1);
+        CHECK(ridge_reach > m.observer_reach(0.0, 0) + 1.0,
+              "setup: ridge reach exceeds the best possible flat-lee reach");
 
         for (long k = 0; k < k1; ++k) {
-            const double d      = m.d_of(static_cast<std::size_t>(k));
-            const double margin = m.eye - d * d * m.c;
+            const double x      = m.x_of(static_cast<std::size_t>(k));
+            const double margin = m.eye - x * x * m.c;
             CHECK(margin > 1e-4, "setup: pre-ridge samples are inside the horizon");
             CHECK(ray.verdicts[static_cast<std::size_t>(k)] == 1,
                   "single ridge: samples before the ridge are visible");
@@ -224,17 +234,16 @@ int main() {
         AzimuthSlice slice;
         const auto& ray = run_ray(engine, slice);
 
-        const double near_slope = m.feature_slope(H1, ka1);
+        const double near_reach = m.feature_reach(H1, ka1);
         // Setup: the gap between the ridges is fully shadowed by the near
-        // ridge (its slope beats eye height everywhere in the gap)...
+        // ridge (it out-reaches an eye-height observer everywhere in the gap)...
         for (long k = ka2 + 1; k < kb1; ++k) {
-            const double d = m.d_of(static_cast<std::size_t>(k));
-            CHECK((m.eye - d * d * m.c) / d < near_slope - 1e-6,
+            CHECK(m.observer_reach(0.0, k) < near_reach - 1.0,
                   "setup: the whole gap lies in the near ridge's shadow");
         }
-        // ...and the ramp base already clears the near ridge with margin.
-        CHECK(m.feature_slope(B, kb1) > near_slope + 1e-5,
-              "setup: the ramp's bare slope alone clears the near ridge");
+        // ...and the ramp base already out-reaches the near ridge with margin.
+        CHECK(m.feature_reach(B, kb1) > near_reach + 1.0,
+              "setup: the ramp's bare reach alone clears the near ridge");
 
         for (long k = 0; k < ka1; ++k)
             CHECK(ray.verdicts[static_cast<std::size_t>(k)] == 1,
@@ -252,7 +261,7 @@ int main() {
     // Berm at 0.75x eye height right behind the coast: an observer close
     // behind it still sees the horizon over it. The same berm at 1.5x eye
     // height blocks the same band. Closed form: band sample k is visible iff
-    // (eye - d_k²c)/d_k >= (h_berm - d_b²c)/d_b (worst case: first berm sample).
+    // sqrt(eye/c) - x_k >= sqrt(h_berm/c) - x_b (worst case: first berm sample).
     {
         const long k_b1 = 1, k_b2 = 6;                    // berm: samples 1..6
         const long k_lo = k_b2 + 2;                       // probe band start
@@ -273,15 +282,14 @@ int main() {
 
         const double low_h  = 0.75 * m.eye;
         const double tall_h = 1.50 * m.eye;
-        const double low_slope  = m.feature_slope(low_h, k_b1);
-        const double tall_slope = m.feature_slope(tall_h, k_b1);
+        const double low_reach  = m.feature_reach(low_h, k_b1);
+        const double tall_reach = m.feature_reach(tall_h, k_b1);
         for (long k = k_lo; k <= k_hi; ++k) {
-            const double d = m.d_of(static_cast<std::size_t>(k));
-            const double band_slope = (m.eye - d * d * m.c) / d;
-            CHECK(band_slope > low_slope * 1.05,
-                  "setup: the band clears the low berm with margin");
-            CHECK(band_slope < tall_slope * 0.95,
-                  "setup: the band is shadowed by the tall berm with margin");
+            const double band_reach = m.observer_reach(0.0, k);
+            CHECK(band_reach > low_reach + 10.0,
+                  "setup: the band out-reaches the low berm with margin");
+            CHECK(band_reach < tall_reach - 10.0,
+                  "setup: the band is out-reached by the tall berm with margin");
         }
 
         AzimuthSlice slice;
@@ -296,35 +304,34 @@ int main() {
         std::puts("PASS: a sub-eye-height berm does not block; a taller one does");
     }
 
-    // ── 5. Curvature: distance under d²c disarms a ridge, closed form ───────
-    // The same low ridge is placed near (d²c small: it keeps a positive
-    // adjusted slope and shadows a probe band) and far (d²c exceeds its
-    // height: h_adj < 0, running_max stays 0, the same-position probe band
-    // stays visible). Only the d²c term distinguishes the two runs.
+    // ── 5. Curvature: distance under x²c disarms a ridge, closed form ───────
+    // The same low ridge is placed near (x²c small: its reach stays positive
+    // and shadows a probe band) and far (x²c exceeds its height: reach < 0,
+    // running_max_reach stays at the crossing's 0, the same-position probe
+    // band stays visible). Only the curvature term distinguishes the two runs.
     {
         const double H = 0.75 * m.eye;  // low ridge; sub-horizon everywhere near
 
-        // Far placement: just past 90% of the horizon — d²c > H there.
-        const long k_far1 = std::lround((0.90 * d_horizon - m.offset) / m.s);
+        // Far placement: just past 90% of the horizon — x²c > H there.
+        const long k_far1 = std::lround(0.90 * x_horizon / m.s);
         const long k_far2 = k_far1 + 4;
-        // Near placement: a few samples in — d²c tiny, ridge slope positive.
+        // Near placement: a few samples in — x²c tiny, ridge reach positive.
         const long k_near1 = 10, k_near2 = 14;
         // Probe band: behind the far ridge but still inside the horizon.
         const long k_p1 = k_far2 + 2;
-        const long k_p2 = std::lround((0.97 * d_horizon - m.offset) / m.s);
+        const long k_p2 = std::lround(0.97 * x_horizon / m.s);
         CHECK(k_p2 > k_p1 + 3, "setup: probe band spans several samples");
 
-        const double d_far = m.d_of(static_cast<std::size_t>(k_far1));
-        CHECK(H < d_far * d_far * m.c * 0.999,
-              "setup: at the far placement d²c exceeds the ridge height");
-        const double near_slope = m.feature_slope(H, k_near1);
-        CHECK(near_slope > 0.0, "setup: the near ridge keeps a positive slope");
+        const double x_far = m.x_of(static_cast<std::size_t>(k_far1));
+        CHECK(H < x_far * x_far * m.c * 0.999,
+              "setup: at the far placement x²c exceeds the ridge height");
+        const double near_reach = m.feature_reach(H, k_near1);
+        CHECK(near_reach > 0.0, "setup: the near ridge keeps a positive reach");
         for (long k = k_p1; k <= k_p2; ++k) {
-            const double d = m.d_of(static_cast<std::size_t>(k));
-            const double probe_slope = (m.eye - d * d * m.c) / d;
-            CHECK(probe_slope > 1e-7,
+            const double probe_reach = m.observer_reach(0.0, k);
+            CHECK(probe_reach > 1.0,
                   "setup: the probe band is inside the bare curvature horizon");
-            CHECK(probe_slope < near_slope * 0.95,
+            CHECK(probe_reach < near_reach - 1.0,
                   "setup: the near ridge shadows the probe band with margin");
         }
 
@@ -347,10 +354,70 @@ int main() {
             CHECK(with_near[static_cast<std::size_t>(k)] == 0,
                   "curvature: the NEAR low ridge shadows the probe band");
             CHECK(with_far[static_cast<std::size_t>(k)] == 1,
-                  "curvature: moved out to where d²c swallows it, the SAME ridge "
+                  "curvature: moved out to where x²c swallows it, the SAME ridge "
                   "no longer blocks");
         }
-        std::puts("PASS: d²c disarms a distant low ridge (closed-form curvature)");
+        std::puts("PASS: x²c disarms a distant low ridge (closed-form curvature)");
+    }
+
+    // ── 6. Long Ridge regression (ADR-0016): high inland crest sees OVER a
+    //      low coastal hill ─────────────────────────────────────────────────
+    // The geometry class the secant model got wrong: a 200 m hill ~3 km
+    // inland hides the NEAR-SHORE water from a 650 m crest ~19 km inland, but
+    // the crest's own horizon reaches far beyond the hill's — the true sight
+    // line to the ocean horizon clears the hill, so the crest is VISIBLE.
+    // (Real-world instance: Long Ridge at 37.310858, −122.230542 blocked at
+    // azimuth 300° by a 206 m hill near the San Gregorio coast.)
+    {
+        const double H_hill  = 200.0, H_crest = 650.0;
+        const long   k_h1 = std::lround(3000.0 / m.s), k_h2 = k_h1 + 4;
+        const long   k_r1 = std::lround(19000.0 / m.s), k_r2 = k_r1 + 9;
+        const double x_hill  = m.x_of(static_cast<std::size_t>(k_h1));
+        const double x_crest = m.x_of(static_cast<std::size_t>(k_r1));
+
+        // The discriminating setup: the SECANT from the crossing to the crest
+        // eye passes below the hill top (a secant-family test blocks this
+        // observer even before curvature, which only worsens the far point)...
+        CHECK((H_crest + m.eye) / x_crest < H_hill / x_hill,
+              "setup: the coast-referenced secant is blocked by the hill");
+        // ...while the crest out-reaches the hill decisively (tangent clears).
+        CHECK(m.observer_reach(H_crest, k_r1) >
+                  m.feature_reach(H_hill, k_h1) + 100.0,
+              "setup: the crest's horizon reach beats the hill's with margin");
+
+        const double h_lo = m.lon_lo(k_h1, box), h_hi = m.lon_hi(k_h2, box);
+        const double r_lo = m.lon_lo(k_r1, box), r_hi = m.lon_hi(k_r2, box);
+        FakeDEM dem([=](double, double lon) -> float {
+            if (lon >= h_lo && lon <= h_hi) return static_cast<float>(H_hill);
+            if (lon >= r_lo && lon <= r_hi) return static_cast<float>(H_crest);
+            return 0.0f;
+        });
+        HorizonSweepEngine engine(dem, water, config,
+                                  box.min_lat, box.max_lat,
+                                  box.min_lon, box.max_lon);
+        AzimuthSlice slice;
+        const auto& ray = run_ray(engine, slice);
+
+        // The flat between hill and crest is in the hill's shadow (probe a
+        // band well interior to both features)...
+        for (long k = k_h2 + 50; k <= k_r1 - 50; k += 100) {
+            CHECK(m.observer_reach(0.0, k) < m.feature_reach(H_hill, k_h1) - 1.0,
+                  "setup: the mid flat is out-reached by the hill");
+            CHECK(ray.verdicts[static_cast<std::size_t>(k)] == 0,
+                  "long ridge: the low flat behind the hill stays blocked");
+        }
+        // ...but every crest sample is visible: the ocean horizon stands
+        // above the hill as seen from 650 m.
+        for (long k = k_r1; k <= k_r2; ++k) {
+            CHECK(m.observer_reach(H_crest, k) >
+                      m.feature_reach(H_crest, k_r1) + 10.0,
+                  "setup: the crest never falls into its own rim's shadow");
+            CHECK(ray.verdicts[static_cast<std::size_t>(k)] == 1,
+                  "long ridge: the high inland crest must see over the "
+                  "low coastal hill (ADR-0016)");
+        }
+        std::puts("PASS: a high inland crest sees the horizon over a low "
+                  "coastal hill");
     }
 
     // ── Grid dump artifact: the PNG debug switch writes a real PNG ───────────

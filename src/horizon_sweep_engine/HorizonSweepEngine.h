@@ -37,12 +37,14 @@ struct WaterQuery {
 /// Sample Grid (ADR-0014). For each sunset azimuth the engine casts parallel
 /// rays in the rotated frame (ADR-0007), each a single march from the box's
 /// offshore western edge: step at the sample spacing testing is_water until
-/// the coastline crossing, then continue inland — line of sight referenced to
-/// the Horizon Reference with curvature/refraction subtracted (ADR-0008) —
-/// storing a finished visible/not verdict at every sample. The output slice
-/// is derived by inverse nearest-neighbour gather: each pixel inherits its
-/// nearest sample's verdict; no per-pixel physics re-evaluation. Depends on
-/// abstractions, not the file-backed loaders (ADR-0009).
+/// the coastline crossing, then continue inland — comparing Horizon Reaches
+/// (ADR-0016): a sample is visible iff its own sea horizon, sqrt(h/c) minus
+/// its inland distance, extends at least as far seaward as every western
+/// obstruction's — storing a finished visible/not verdict at every sample.
+/// The output slice is derived by inverse nearest-neighbour gather: each
+/// pixel inherits its nearest sample's verdict; no per-pixel physics
+/// re-evaluation. Depends on abstractions, not the file-backed loaders
+/// (ADR-0009).
 class HorizonSweepEngine {
 public:
     HorizonSweepEngine(ElevationSource&      dem,

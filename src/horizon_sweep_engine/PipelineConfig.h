@@ -12,12 +12,12 @@ struct PipelineConfig {
     double earth_radius_m;             ///< mean Earth radius R (metres)
     double observer_eye_height_m;      ///< observer eye height above bare ground
 
-    // ── Line-of-sight model (ADR-0008) ──────────────────────────────────
-    double horizon_reference_offset_m; ///< seaward offset of the Horizon Reference; d at the coast
+    // ── Line-of-sight model (ADR-0008 / ADR-0016) ───────────────────────
     double coast_obstruction_skip_m;   ///< terrain within this many metres inland of the
                                        ///< coastline crossing does not raise the running
-                                       ///< max slope (passable foreshore: foredunes/berms
-                                       ///< don't shadow their own lee). 0 = disabled.
+                                       ///< max Horizon Reach (passable foreshore:
+                                       ///< foredunes/berms don't shadow their own lee).
+                                       ///< 0 = disabled.
 
     // ── Grid ────────────────────────────────────────────────────────────
     double cell_per_degree;            ///< cells per degree (1/3 arc-second = 10800)

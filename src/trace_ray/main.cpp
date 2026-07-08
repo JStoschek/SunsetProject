@@ -3,10 +3,11 @@
 // Wires the production DEM + OSM-ocean loaders to the engine over a tiny bbox
 // around a target point, enables the engine's built-in RayTrace, and runs one
 // azimuth slice. The engine then prints, for the single parallel ray that
-// carries the target pixel, every march sample — elevation, is_water, running
-// max slope, the observer slope, and the STORED visibility verdict — from
-// `--before` samples seaward of the coastline crossing through `--after`
-// samples inland (ADR-0014: a ray is a plain list of yes/no points).
+// carries the target pixel, every march sample — elevation, is_water, the
+// running max Horizon Reach, the observer's reach (ADR-0016), and the STORED
+// visibility verdict — from `--before` samples seaward of the coastline
+// crossing through `--after` samples inland (ADR-0014: a ray is a plain list
+// of yes/no points).
 //
 // This is a debugging tool: it does NOT re-derive the math, it observes what the
 // engine actually computes (the recorded values come straight out of the live

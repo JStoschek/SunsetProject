@@ -65,10 +65,10 @@ constexpr double kCoastLon = -122.511;
 // curvature horizon.  Must be visible at az = 300° with flat terrain.
 constexpr double kOceanBeachLon = -122.508;
 
-// Curvature horizon for 0 m terrain with the default config (offset 2.5 km,
-// eye 2 m): d² (1-2k)/(2R) = eye → d ≈ 5.9 km from the Horizon Reference →
-// ≈ 3.4 km past the coast. 1 km and 7 km are safely INTERIOR to the visible
-// and hidden regions (re-anchored per ADR-0014: never assert on a boundary).
+// Curvature horizon for 0 m terrain with the default config (eye 2 m,
+// ADR-0016): x² (1-2k)/(2R) = eye → x ≈ 5.9 km past the coastline crossing.
+// 1 km and 7 km are safely INTERIOR to the visible and hidden regions
+// (re-anchored per ADR-0014: never assert on a boundary).
 constexpr double kNearDistKm = 1.0;  // safely within horizon (dist_from_coast)
 constexpr double kFarDistKm  = 7.0;  // safely beyond horizon
 
@@ -106,9 +106,9 @@ int main() {
     // ── Ocean Beach cell is visible at az = 300° ────────────────────────────
     //
     // The coast at kCoastLon (−122.511°) places Ocean Beach 265 m inland.
-    // With flat 0 m terrain the running_max_slope stays at 0 and the
-    // curvature drop at d ≈ 2.8 km is only ≈ 0.45 m — well below eye
-    // height.  The cell must be visible.
+    // With flat 0 m terrain the running_max_reach stays at 0 and the
+    // curvature drop a few hundred metres inland is millimetres — far below
+    // eye height.  The cell must be visible.
     //
     // b350d3e regression guard: if any future change to the coast march (or to
     // the engine's along_c calculation) shifts the crossing east past
@@ -176,8 +176,8 @@ int main() {
     }
 
     // ── Far-inland cell (7 km inland) is hidden by Earth curvature ──────────
-    // At 7 km from coast (d ≈ 9.5 km from Horizon Reference) the curvature/
-    // refraction drop is ≈ 5.2 m > 2 m eye height → cell must be hidden.
+    // At 7 km east of the coast (x ≈ 8.1 km along the tilted ray) the
+    // curvature/refraction drop is ≈ 3.8 m > 2 m eye height → cell hidden.
     {
         FakeDEM   dem([](double, double) { return 0.0f; });
         FakeWater water(kCoastLon);
@@ -200,9 +200,10 @@ int main() {
     }
 
     // ── A ridge at the coast blocks the terrain behind it ───────────────────
-    // With a 100 m ridge at the coast, the running_max_slope rises sharply.
+    // With a 100 m ridge at the coast, the running_max_reach jumps to the
+    // ridge's own horizon (≈ 41 km — far beyond any low observer's reach).
     // Ocean Beach (265 m behind the ridge) must be shadowed.  This exercises
-    // the running_max_slope accumulation on a NW-bearing ray — a path not
+    // the running_max_reach accumulation on a NW-bearing ray — a path not
     // covered by the cardinal (az = 270°) tests.
     {
         // Ridge at kCoastLon to kCoastLon+0.0002° (≈ 18 m wide), 100 m tall.

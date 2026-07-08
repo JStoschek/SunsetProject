@@ -76,7 +76,6 @@ PipelineConfig PipelineConfig::load(const std::string& path) {
     c.refraction_coefficient_k   = require_double(kv, "refraction_coefficient_k");
     c.earth_radius_m             = require_double(kv, "earth_radius_m");
     c.observer_eye_height_m      = require_double(kv, "observer_eye_height_m");
-    c.horizon_reference_offset_m = require_double(kv, "horizon_reference_offset_m");
     c.coast_obstruction_skip_m   = optional_double(kv, "coast_obstruction_skip_m", 0.0);
     c.cell_per_degree            = require_double(kv, "cell_per_degree");
     c.meters_per_degree_lat      = require_double(kv, "meters_per_degree_lat");

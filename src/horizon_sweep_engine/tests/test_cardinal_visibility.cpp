@@ -1,7 +1,7 @@
 // Behavioural specification for HorizonSweepEngine::compute_slice at the
 // cardinal sunset azimuth (270° = due west). Tests drive the engine ONLY
 // through compute_slice with FakeDEM / FakeWater — they never inspect
-// running_max_slope, call private methods, or assert on query counts.
+// engine internals, call private methods, or assert on query counts.
 //
 // Assertions sit safely INTERIOR to visible/blocked regions: under the
 // forward-sampled grid (ADR-0014) output pixels inherit their nearest
@@ -48,10 +48,11 @@ int main() {
     const Box box;
 
     // ── Flat terrain near the coast is visible; far is not ──────────────
-    // On an all-0 m profile, running_max_slope stays 0 (open sea has
-    // non-positive slope), so a pixel is visible iff the 1.7 m eye height clears
-    // the curvature drop: 1.7 >= d^2 (1-2k)/(2R), i.e. d within ~5.4 km. A pixel
-    // ~0.9 km past the coast is inside that horizon; one ~40 km inland is not.
+    // On an all-0 m profile, running_max_reach stays 0 (the crossing's sea
+    // baseline; 0 m terrain reaches no farther), so a pixel is visible iff its
+    // eye height clears the curvature drop: eye >= x^2 (1-2k)/(2R), i.e. x
+    // within sqrt(eye/c) ≈ 5.9 km of the coast. A pixel ~0.9 km past the
+    // coast is inside that horizon; one ~40 km inland is not.
     {
         FakeDEM  dem([](double, double) { return 0.0f; });  // flat sea level
         FakeWater water(-122.95);                           // meridional coast
@@ -96,11 +97,11 @@ int main() {
     }
 
     // ── Single ridge blocks the flat terrain behind it ──────────────────
-    // A 100 m ridge ~2 km past the coast raises running_max_slope. A flat
-    // sea-level pixel further inland (whose own h_adjusted/d falls below the
-    // ridge's) is shadowed; pixels at or before the ridge (within the curvature
-    // horizon) remain visible — including the ridge crest, which sees over
-    // itself because the eye-height offset is added at the check.
+    // A 100 m ridge ~2 km past the coast raises running_max_reach. A flat
+    // sea-level pixel further inland (whose own horizon reach falls short of
+    // the ridge's) is shadowed; pixels at or before the ridge (within the
+    // curvature horizon) remain visible — including the ridge crest, which
+    // sees over itself because the eye-height offset is added at the check.
     {
         FakeDEM dem([](double, double lon) {
             return (lon >= -122.928 && lon <= -122.927) ? 100.0f : 0.0f;
@@ -129,9 +130,9 @@ int main() {
 
     // ── An elevated observer sees over the ridge ────────────────────────
     // Behind the same 100 m ridge, the ground steps up to a 200 m shelf ~3 km
-    // inland. The shelf's leading edge has a steeper slope than the ridge, so
-    // (h_adjusted + eye_height)/d clears the ridge's running_max_slope and the
-    // observer is visible. A flat pixel between the ridge and the shelf stays
+    // inland. The shelf's horizon out-reaches the ridge's, so the observer's
+    // reach clears the ridge's running_max_reach and the observer is visible.
+    // A flat pixel between the ridge and the shelf stays
     // shadowed in the same slice — proving the ridge is still active and that
     // it is the observer's height (added only at the check), not a special
     // case, that gets it over the ridge.
@@ -164,25 +165,23 @@ int main() {
 
     // ── Earth curvature hides a distant low observer ────────────────────
     // Pick a sea-level observer far enough out that the curvature/refraction
-    // drop d^2(1-2k)/(2R) exceeds the eye height. A flat-earth model (no
-    // curvature term) would mark it visible — running_max_slope is 0 and the
-    // 1.7 m eye gives a positive slope. With curvature subtracted, the observer
-    // falls below the horizon and is correctly hidden.
+    // drop x^2(1-2k)/(2R) exceeds the eye height (ADR-0016: the observer's
+    // horizon reach sqrt(eye/c) falls short of the coastline crossing). A
+    // flat-earth model (no curvature term) would mark it visible — nothing
+    // rises above eye level. With curvature, the observer is correctly hidden.
     {
         const double coast_lon = -122.95;
         const double obs_lon    = -122.848774;  // ~9 km inland
         const double cos_lat    = std::cos(box.min_lat * 3.14159265358979323846 / 180.0);
         const double east_m     = (obs_lon - coast_lon) * config.meters_per_degree_lat * cos_lat;
-        const double d          = config.horizon_reference_offset_m + east_m;
-        const double drop       = d * d * (1.0 - 2.0 * config.refraction_coefficient_k)
+        const double drop       = east_m * east_m
+                                  * (1.0 - 2.0 * config.refraction_coefficient_k)
                                   / (2.0 * config.earth_radius_m);
 
         // The mechanism: curvature drop outweighs eye height, yet flat-earth
-        // (no drop) would still see a positive slope and call it visible.
+        // (no drop, no terrain above eye level) would call it visible.
         assert(drop > config.observer_eye_height_m &&
                "test setup: curvature drop must exceed eye height at this distance");
-        assert(config.observer_eye_height_m / d > 0.0 &&
-               "flat-earth (no curvature) would mark this sea-level observer visible");
 
         FakeDEM   dem([](double, double) { return 0.0f; });
         FakeWater water(coast_lon);
@@ -203,14 +202,16 @@ int main() {
     // ── Eye-height offset lifts a pixel over the horizon ────────────────
     // At a distance where a 0 m pixel is beyond the curvature horizon (hidden,
     // with margin), ground raised by 1.7 m is visible: its own bare ground
-    // enters the slope profile, and the eye-height offset added only at the
+    // enters the reach profile, and the eye-height offset added only at the
     // visibility check carries it over. Two identical runs, same coast, same
     // column, same distance — the only difference is the terrain height. The
-    // distance is chosen so BOTH verdicts hold with a comfortable margin
-    // (≈0.7 m each way), well clear of the sample-quantisation wobble.
+    // distance sits between the bare horizon sqrt(eye/c) ≈ 5.9 km and the
+    // raised horizon sqrt((1.7+eye)/c) ≈ 8.0 km so BOTH verdicts hold with a
+    // comfortable margin (≈0.8 m each way), well clear of the
+    // sample-quantisation wobble.
     {
         const double coast_lon = -122.95;
-        const double obs_lon    = -122.9005;   // ~4.4 km inland
+        const double obs_lon    = -122.8724;   // ~6.9 km inland
         FakeWater water(coast_lon);
         const int row     = 5;
         const int obs_col = col_for_lon(config, box, obs_lon);
@@ -224,7 +225,7 @@ int main() {
 
         // Shelf starts just west of the sampled pixel (so rounding can't drop
         // the pixel onto bare sea level) but still far enough out that its own
-        // slope is negative and never raises running_max_slope.
+        // reach is negative and never raises running_max_reach.
         FakeDEM raised([obs_lon](double, double lon) {
             return lon >= obs_lon - 0.001 ? 1.7f : 0.0f;  // ground at eye height
         });
@@ -241,8 +242,8 @@ int main() {
         std::puts("PASS: eye-height offset lifts a pixel over the horizon");
     }
 
-    // ── No ocean-cell rule: open sea never raises running_max_slope ─────
-    // If open-sea cells (h = 0) raised running_max_slope, the very first land
+    // ── No ocean-cell rule: open sea never raises running_max_reach ─────
+    // If open-sea cells (h = 0) raised running_max_reach, the very first land
     // pixel past the coast would be shadowed. Instead, on a flat profile every
     // pixel from the coastline crossing out to the curvature horizon is visible
     // as one contiguous band — no special case for water required.

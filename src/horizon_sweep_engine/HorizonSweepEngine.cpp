@@ -47,11 +47,15 @@ void HorizonSweepEngine::compute_slice(double azimuth_deg, AzimuthSlice& out) {
     // Ocean->land march bearing (reverse of the sunset azimuth).
     const double bearing = std::fmod(azimuth_deg + 180.0, 360.0);
 
-    // Curvature + refraction drop coefficient: h_adjusted = h - d^2 * c.
+    // Curvature + refraction coefficient c = (1-2k)/(2R): a point of height h
+    // commands the sea out to its classical horizon distance sqrt(h/c). The
+    // visibility test compares Horizon Reaches (ADR-0016) in the c-scaled form
+    // sqrt(h) - x*sqrt(c), which the flat-earth limit c -> 0 (k >= 0.5)
+    // degrades gracefully into a plain eye-level height comparison.
     const double k = config_.refraction_coefficient_k;
     const double R = config_.earth_radius_m;
     const double c = (1.0 - 2.0 * k) / (2.0 * R);
-    const double offset = config_.horizon_reference_offset_m;
+    const double sqrt_c = std::sqrt(std::max(c, 0.0));
     const double skip   = config_.coast_obstruction_skip_m;  // passable foreshore depth (m)
     const double eye    = config_.observer_eye_height_m;
     const double mpd    = config_.meters_per_degree_lat;
@@ -110,8 +114,8 @@ void HorizonSweepEngine::compute_slice(double azimuth_deg, AzimuthSlice& out) {
         trace_j = std::lround(perp_of(Et, Nt) / s);
     }
     struct TraceStep {
-        int    idx; double along, d, lat, lon; float h; double h_adj;
-        bool   in_skip; double running_max; double obs_slope; bool visible;
+        int    idx; double along, x, lat, lon; float h; double h_adj;
+        bool   in_skip; double max_reach; double obs_reach; bool visible;
     };
     std::vector<TraceStep> trace_rec;
 
@@ -186,18 +190,23 @@ void HorizonSweepEngine::compute_slice(double azimuth_deg, AzimuthSlice& out) {
             if (verdicts_.size() < needed) verdicts_.resize(needed);
         }
 
-        // ── Verdict march (the new core, ADR-0014) ──────────────────────
-        // Continue the same march inland from the crossing, accumulating d
-        // (from the Horizon Reference offset) and the running maximum slope
-        // (bare ground only), and store a FINISHED visible/not verdict at
-        // every sample: visible = (h_adj + eye)/d >= running_max. The first
-        // land sample is visible emergently (h ~ 0, d = offset,
-        // running_max = 0). Terminate by along-ray distance so the ray spans
-        // every in-box pixel regardless of where the tilted ray enters or
-        // leaves the latitude band.
+        // ── Verdict march (the new core, ADR-0014 / ADR-0016) ───────────
+        // Continue the same march inland from the crossing, accumulating x
+        // (distance inland from the crossing) and the running maximum Horizon
+        // Reach (bare ground only), and store a FINISHED visible/not verdict
+        // at every sample: visible iff the observer's own reach meets the
+        // running maximum. Reaches are held in the c-scaled form
+        // sqrt(h) - x*sqrt(c) (ordering-equivalent to sqrt(h/c) - x metres).
+        // running_max starts at 0 — the sea surface at the crossing itself —
+        // so an unobstructed observer is visible iff h + eye >= c*x^2, the
+        // classical curvature horizon; open water and no-data (h = 0) never
+        // raise it, and below-sea terrain is clamped to sea level (it can
+        // never poke above a tangent sight line). Terminate by along-ray
+        // distance so the ray spans every in-box pixel regardless of where
+        // the tilted ray enters or leaves the latitude band.
         char* const verd = verdicts_.data();
         int n = 0;
-        double d     = offset;
+        double x     = 0.0;
         double along = along_c;
         double running_max = 0.0;
         const bool tracing = trace_.enabled && j == trace_j;
@@ -206,25 +215,29 @@ void HorizonSweepEngine::compute_slice(double azimuth_deg, AzimuthSlice& out) {
             const double lon = lon_of(E);
             float h = dem_.get_elevation(lat, lon);
             if (std::isnan(h)) h = 0.0f;  // no data: treat as ocean surface
-            const double h_adj = h - d * d * c;
+            const double hh    = h > 0.0f ? static_cast<double>(h) : 0.0;
+            const double reach = std::sqrt(hh) - x * sqrt_c;
             // Terrain within the passable foreshore (first `skip` metres inland
             // of the crossing) does not raise the obstruction profile: low
             // foredunes and berms right at the shore should not shadow the flat
             // in their own lee where an observer plainly sees the ocean
             // horizon. Real relief farther inland still accumulates normally.
-            const bool in_skip = (d - offset < skip);
+            const bool in_skip = (x < skip);
             if (!in_skip)
-                running_max = std::max(running_max, h_adj / d);
-            const double obs_slope = (h_adj + eye) / d;
-            const bool   visible   = obs_slope >= running_max;
+                running_max = std::max(running_max, reach);
+            const double obs_reach =
+                std::sqrt(std::max(static_cast<double>(h) + eye, 0.0)) -
+                x * sqrt_c;
+            const bool   visible   = obs_reach >= running_max;
             verd[n++] = visible ? 1 : 0;
             if (tracing && n - 1 <= trace_.steps_after)
-                trace_rec.push_back({n - 1, along, d, lat, lon, h, h_adj,
-                                     in_skip, running_max, obs_slope, visible});
+                trace_rec.push_back({n - 1, along, x, lat, lon, h,
+                                     h - x * x * c, in_skip, running_max,
+                                     obs_reach, visible});
 
             E     += dE;
             N     += dN;
-            d     += s;
+            x     += s;
             along += s;
         }
         if (n == 0) continue;
@@ -250,16 +263,19 @@ void HorizonSweepEngine::compute_slice(double azimuth_deg, AzimuthSlice& out) {
                 "ray index j      : %ld\n"
                 "coast crossing   : (%.6f, %.6f)  [sample 0]\n"
                 "along_c          : %.3f m\n"
-                "config: offset(d@coast)=%.1f m  eye=%.2f m  skip=%.1f m  "
-                "s=%.4f m  k=%.3f  R=%.0f m  c=%.6e\n\n",
+                "config: eye=%.2f m  skip=%.1f m  "
+                "s=%.4f m  k=%.3f  R=%.0f m  c=%.6e\n\n"
+                "Reaches are Horizon Reach (ADR-0016), metres seaward of the\n"
+                "crossing that a point's own sea horizon extends; a sample is\n"
+                "visible iff obs_reach >= max_reach.\n\n",
                 azimuth_deg, bearing, trace_.target_lat, trace_.target_lon,
                 trace_j, coast_lat, coast_lon, along_c,
-                offset, eye, skip, s, k, R, c);
+                eye, skip, s, k, R, c);
 
             std::printf(
                 "%6s %12s %10s %10s %11s %11s %9s %8s %5s %12s %12s %4s %4s\n",
-                "step", "lat", "lon", "d_m", "along_m", "elev_m", "h_adj",
-                "water", "skip", "max_slope", "obs_slope", "vis", "side");
+                "step", "lat", "lon", "x_m", "along_m", "elev_m", "h_adj",
+                "water", "skip", "max_reach", "obs_reach", "vis", "side");
             std::printf(
                 "------ ------------ ---------- ---------- ----------- "
                 "----------- --------- -------- ----- ------------ "
@@ -279,7 +295,6 @@ void HorizonSweepEngine::compute_slice(double azimuth_deg, AzimuthSlice& out) {
             for (int m = nb; m >= 1; --m) {
                 const double la = lat_of(Nc - m * dN);
                 const double lo = lon_of(Ec - m * dE);
-                const double dd = offset - m * s;
                 float h = dem_.get_elevation(la, lo);
                 char elev[16];
                 if (std::isnan(h))
@@ -289,19 +304,24 @@ void HorizonSweepEngine::compute_slice(double azimuth_deg, AzimuthSlice& out) {
                 std::printf(
                     "%6d %12.6f %10.6f %10.2f %11.2f %s %9s %8s %5s %12s "
                     "%12s %4s %4s\n",
-                    -m, la, lo, dd, -static_cast<double>(m) * s, elev,
+                    -m, la, lo, -static_cast<double>(m) * s,
+                    -static_cast<double>(m) * s, elev,
                     "-", water_at(la, lo), "-", "-", "-", "F", "sea");
             }
 
             // Inland: replay the recorded march samples. `vis` is the STORED
             // verdict — the exact bool output pixels inherit via the gather.
+            // Reaches are converted from the c-scaled internal form to metres
+            // (division by sqrt(c); printed raw in the flat-earth c = 0 case).
+            const double reach_m = sqrt_c > 0.0 ? 1.0 / sqrt_c : 1.0;
             for (const TraceStep& t : trace_rec) {
                 std::printf(
                     "%6d %12.6f %10.6f %10.2f %11.2f %11.3f %9.3f %8s %5s "
-                    "%12.7f %12.7f %4s %4s\n",
-                    t.idx, t.lat, t.lon, t.d, t.along, (double)t.h, t.h_adj,
+                    "%12.2f %12.2f %4s %4s\n",
+                    t.idx, t.lat, t.lon, t.x, t.along, (double)t.h, t.h_adj,
                     water_at(t.lat, t.lon), t.in_skip ? "yes" : "no",
-                    t.running_max, t.obs_slope, t.visible ? "T" : "F", "land");
+                    t.max_reach * reach_m, t.obs_reach * reach_m,
+                    t.visible ? "T" : "F", "land");
             }
             std::printf("\n");
             std::fflush(stdout);
