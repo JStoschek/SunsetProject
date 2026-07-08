@@ -17,6 +17,14 @@ public:
     float get_elevation(double lat, double lon);
     std::size_t tile_count() const { return index_.size(); }
 
+    // Path of the file indexed for `key`, or nullptr if no tile covers it.
+    // When multiple acquisitions of the same tile exist on disk, this is the
+    // one discovery selected (newest acquisition date).
+    const std::string* tile_path(const GeoTile& key) const {
+        auto it = index_.find(key);
+        return it == index_.end() ? nullptr : &it->second;
+    }
+
     // Build a frozen, eviction-free snapshot of the tiles in `keys` (the strip
     // working set).  Loads each tile fresh; the stateful LRU cache is left
     // untouched for the serial phases.  Keys with no matching tile file are

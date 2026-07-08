@@ -11,8 +11,13 @@ DEMTileLoader::DEMTileLoader(const std::string& tile_dir, int lru_capacity)
     : lru_capacity_(lru_capacity)
 {
     GDALAllRegister();
-    static const std::regex pattern(R"(USGS_13_n(\d+)w(\d+)_.*\.tif)",
+    static const std::regex pattern(R"(USGS_13_n(\d+)w(\d+)_(\d*).*\.tif)",
                                     std::regex::icase);
+    // A tile can appear more than once (USGS re-acquisitions of the same 1°×1°
+    // cell, e.g. ..._20100929.tif and ..._20250826.tif).  The newest acquisition
+    // date wins; equal dates fall back to the lexicographically greatest
+    // filename, so the index never depends on directory-iteration order.
+    std::unordered_map<TileKey, std::pair<long, std::string>, PairHash> newest;
     for (const auto& entry : fs::directory_iterator(tile_dir)) {
         if (!entry.is_regular_file()) continue;
         std::string name = entry.path().filename().string();
@@ -21,7 +26,16 @@ DEMTileLoader::DEMTileLoader(const std::string& tile_dir, int lru_capacity)
             int lat = std::stoi(m[1].str());
             int lon = std::stoi(m[2].str());
             // Filename tokens are the USGS NW-corner labeling (n{lat}w{lon}).
-            index_[GeoTile::from_usgs(lat, lon)] = entry.path().string();
+            const TileKey key = GeoTile::from_usgs(lat, lon);
+            // YYYYMMDD acquisition date; a missing date sorts oldest.
+            const long date = m[3].length() ? std::stol(m[3].str()) : 0;
+            std::pair<long, std::string> rank{date, name};
+            auto [it, inserted] = newest.try_emplace(key, rank);
+            if (!inserted) {
+                if (rank <= it->second) continue;
+                it->second = std::move(rank);
+            }
+            index_[key] = entry.path().string();
         }
     }
 }
