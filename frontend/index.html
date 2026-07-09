@@ -9,10 +9,15 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght,SOFT,WONK@9..144,300..700,0..100,0..1&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet" />
 
-  <link href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css" rel="stylesheet" />
-  <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
-  <!-- Version-pinned SunCalc CDN (mirrors the pinned-MapLibre rationale); attaches global SunCalc. -->
-  <script src="https://unpkg.com/suncalc@1.9.0/suncalc.js"></script>
+  <!-- Self-hosted map libs (vendored, no third-party CDN). See frontend/vendor/. -->
+  <link href="vendor/maplibre-gl.css" rel="stylesheet" />
+  <script src="vendor/maplibre-gl.js"></script>
+  <!-- PMTiles protocol: reads the local vector basemap (frontend/basemap/basemap.pmtiles). Attaches global pmtiles. -->
+  <script src="vendor/pmtiles.js"></script>
+  <!-- Protomaps "light" theme layers (generated from protomaps-themes-base). Attaches window.PROTOMAPS_THEME_LAYERS. -->
+  <script src="vendor/basemap_theme.js"></script>
+  <!-- SunCalc (vendored). Attaches global SunCalc. -->
+  <script src="vendor/suncalc.js"></script>
   <!-- Pure modules; UMD attaches sunsetAzimuth / BitLayout / colorizeBitmaskPixel / assertSupportedFormatVersion globals. -->
   <script src="sunset_azimuth.js"></script>
   <script src="bit_layout.js"></script>
@@ -353,17 +358,45 @@
       return { data: await blob.arrayBuffer() };
     });
 
+    // Self-contained vector basemap: PMTiles read directly from a single local
+    // file via HTTP range requests (no tile server). The protocol resolves
+    // `pmtiles://…` source/tile URLs against the vendored basemap.pmtiles.
+    const pmtilesProtocol = new pmtiles.Protocol();
+    maplibregl.addProtocol('pmtiles', pmtilesProtocol.tile);
+    const BASEMAP_URL = new URL('basemap/basemap.pmtiles', location.href).href;
+
+    // The Protomaps "light" theme layers are authored against a source named
+    // "basemap"; keep the key in sync. Drop the visibility overlay in just
+    // below the first label (symbol) layer so place names stay legible on top.
+    const themeLayers = window.PROTOMAPS_THEME_LAYERS;
+    const firstSymbolIdx = themeLayers.findIndex((l) => l.type === 'symbol');
+    const visibilityLayer = {
+      id: 'visibility',
+      type: 'raster',
+      source: 'visibility',
+      paint: { 'raster-opacity': 0.6, 'raster-resampling': 'nearest' },
+    };
+    const layers = firstSymbolIdx === -1
+      ? [...themeLayers, visibilityLayer]
+      : [...themeLayers.slice(0, firstSymbolIdx), visibilityLayer, ...themeLayers.slice(firstSymbolIdx)];
+
+    // Directory of the current page (no query/hash). Used to build absolute
+    // asset URLs; note the glyphs template must keep its literal {fontstack}
+    // and {range} tokens, so it is NOT run through `new URL()` (which would
+    // percent-encode the braces and break glyph loading).
+    const BASE_URL = location.origin + location.pathname.replace(/[^/]*$/, '');
+
     const map = new maplibregl.Map({
       container: 'map',
       style: {
         version: 8,
+        glyphs: BASE_URL + 'basemap/fonts/{fontstack}/{range}.pbf',
+        sprite: BASE_URL + 'basemap/sprites/light',
         sources: {
-          osm: {
-            type: 'raster',
-            tiles: ['https://tile.openstreetmap.org/{z}/{x}/{y}.png'],
-            tileSize: 256,
-            attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap contributors</a>',
-            maxzoom: 19,
+          basemap: {
+            type: 'vector',
+            url: 'pmtiles://' + BASEMAP_URL,
+            attribution: '© <a href="https://openstreetmap.org/copyright">OpenStreetMap</a> · <a href="https://protomaps.com">Protomaps</a>',
           },
           visibility: {
             type: 'raster',
@@ -375,18 +408,7 @@
             attribution: 'Sunset Visibility, USGS DEM',
           },
         },
-        layers: [
-          { id: 'osm', type: 'raster', source: 'osm' },
-          {
-            id: 'visibility',
-            type: 'raster',
-            source: 'visibility',
-            paint: {
-              'raster-opacity': 0.6,
-              'raster-resampling': 'nearest',
-            },
-          },
-        ],
+        layers,
       },
       center: INITIAL_CENTER,
       zoom: 11,

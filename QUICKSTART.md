@@ -50,15 +50,16 @@ npm install
 ```
 
 ### Serve frontend locally
+The vector basemap is a single `frontend/basemap/basemap.pmtiles` read by HTTP
+**byte range**, which `python3 -m http.server` does NOT support. Use the
+bundled Range-capable dev server (also what the preview launches):
 ```bash
-# Simple HTTP server (Python 3)
-python3 -m http.server 8080
-
-# Or use Node/npm (requires http-server package)
-npx http-server frontend -p 8080
+python3 scripts/dev_server.py 8080 --directory frontend
+# → http://localhost:8080/
 ```
-
-Open browser to: `http://localhost:8080/frontend/`
+`npx http-server frontend -p 8080` also supports Range if you prefer Node.
+Plain `python3 -m http.server` will load the app but the basemap tiles will
+fail with "storage backend supports HTTP Byte Serving".
 
 ## Pipeline Tools
 
@@ -177,4 +178,11 @@ cmake --build build-release && \
 python3 -m run_boxes boxes.json && \
 python3 -m encode_tiles --input build/boxes --output-dir frontend/tiles/ && \
 python3 -m http.server 8080
+```
+
+```bash
+cmake --build build-release && \
+python3 -m run_boxes boxes.json && \
+python3 -m encode_tiles --input build/boxes --output-dir frontend/tiles/ && \
+python3 scripts/dev_server.py 8080 --directory frontend
 ```

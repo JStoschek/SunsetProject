@@ -40,6 +40,10 @@ CONTEXT.md
 # Generated tile pyramids (output of the tile encoder, issue 05)
 /frontend/tiles/
 
+# Vector basemap archive (~100 MB, regenerated via `pmtiles extract`; deploy
+# straight to S3). The small vendored libs/fonts/sprite/theme ARE committed.
+/frontend/basemap/*.pmtiles
+
 # Node / JS tooling
 /node_modules/
 

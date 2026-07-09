@@ -1,6 +1,6 @@
 {
   "version": "0.0.1",
   "configurations": [
-    { "name": "sunset-frontend", "runtimeExecutable": "python3", "runtimeArgs": ["-m", "http.server", "8092", "--directory", "frontend"], "port": 8092 }
+    { "name": "sunset-frontend", "runtimeExecutable": "python3", "runtimeArgs": ["scripts/dev_server.py", "8092", "--directory", "frontend"], "port": 8092 }
   ]
 }
