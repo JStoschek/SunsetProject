@@ -41,8 +41,22 @@ BitmaskGeoTiffWriter::BitmaskGeoTiffWriter(const std::string& path,
     if (!ds_)
         throw std::runtime_error("could not create GeoTIFF '" + path + "'");
 
-    const double gt[6] = { min_lon, cell_deg, 0.0, max_lat, 0.0, -cell_deg };
+    // The engine computes a POINT lattice: the sample for grid column c / the
+    // top TIFF row sits exactly at (min_lon + c*cell_deg, max_lat - cell_deg),
+    // i.e. the sample points are the pixel *centres*, not corners.  A GDAL
+    // geotransform is edge-registered — gt[0]/gt[3] name the north-west corner
+    // of pixel (0,0) — so anchoring it at (min_lon, max_lat) would place every
+    // pixel centre half a cell north-east of the sample it holds, shifting the
+    // whole overlay up-and-right against the basemap.  Offset the origin by half
+    // a cell (west and north↓) so pixel centres coincide with sample points.
+    const double gt[6] = { min_lon - 0.5 * cell_deg, cell_deg, 0.0,
+                           max_lat - 0.5 * cell_deg, 0.0, -cell_deg };
     ds_->SetGeoTransform(const_cast<double*>(gt));
+
+    // Declare point-registration so readers that honour it (GDAL, QGIS) treat
+    // gt as centre-anchored; the explicit half-cell offset above is what
+    // actually moves pixels for readers that assume area registration.
+    ds_->SetMetadataItem("AREA_OR_POINT", "Point");
 
     OGRSpatialReference srs;
     srs.importFromEPSG(4326);

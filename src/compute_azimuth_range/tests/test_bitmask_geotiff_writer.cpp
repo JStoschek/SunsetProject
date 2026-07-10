@@ -120,6 +120,33 @@ int main() {
     assert((int)meta_num(ds, "format_version") == format_version);
     std::puts("PASS: azimuth/format metadata tags round-trip");
 
+    // ── Point registration: pixel centres sit on the engine's sample lattice ─
+    // The engine samples col c at lon = min_lon + c*cell_deg and the top TIFF
+    // row at lat = max_lat - cell_deg (AzimuthSlice geometry).  The origin must
+    // therefore be offset half a cell so pixel *centres*, not corners, land on
+    // those points — otherwise the overlay draws half a cell north-east of the
+    // terrain it describes.
+    {
+        double gt[6];
+        assert(ds->GetGeoTransform(gt) == CE_None);
+        const double eps = 1e-12;
+        assert(std::fabs(gt[0] - (min_lon - 0.5 * cell_deg)) < eps);
+        assert(std::fabs(gt[3] - (max_lat - 0.5 * cell_deg)) < eps);
+        assert(std::fabs(gt[1] - cell_deg) < eps);
+        assert(std::fabs(gt[5] + cell_deg) < eps);
+        assert(gt[2] == 0.0 && gt[4] == 0.0);
+
+        // Centre of top-left pixel == first sample point (min_lon, max_lat-cell).
+        const double cx = gt[0] + 0.5 * gt[1];
+        const double cy = gt[3] + 0.5 * gt[5];
+        assert(std::fabs(cx - min_lon) < eps);
+        assert(std::fabs(cy - (max_lat - cell_deg)) < eps);
+
+        const char* ap = ds->GetMetadataItem("AREA_OR_POINT");
+        assert(ap && std::string(ap) == "Point");
+        std::puts("PASS: geotransform is point-registered on the sample lattice");
+    }
+
     GDALClose(ds);
     fs::remove(path);
     std::puts("ALL PASS");

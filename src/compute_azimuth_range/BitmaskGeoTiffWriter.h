@@ -17,9 +17,11 @@ class GDALDataset;
 /// GDAL band writes live here, driven by the pure StripResult the sweep produces.
 class BitmaskGeoTiffWriter {
 public:
-    /// Create the output GeoTIFF.  `min_lon`/`max_lat` are the north-west corner
-    /// and `cell_deg` the pixel size of the north-up grid.  Throws
-    /// std::runtime_error if the driver or file cannot be created.
+    /// Create the output GeoTIFF.  `min_lon`/`max_lat` name the engine's sample
+    /// lattice (the western sample column / the box's north edge) and `cell_deg`
+    /// the pixel size of the north-up grid.  The raster is point-registered: the
+    /// geotransform is offset half a cell so pixel *centres* fall on the sample
+    /// points.  Throws std::runtime_error if the driver or file cannot be created.
     BitmaskGeoTiffWriter(const std::string& path,
                          int total_width, int total_height,
                          double min_lon, double max_lat, double cell_deg,
