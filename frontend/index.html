@@ -369,12 +369,106 @@
     // "basemap"; keep the key in sync. Drop the visibility overlay in just
     // below the first label (symbol) layer so place names stay legible on top.
     const themeLayers = window.PROTOMAPS_THEME_LAYERS;
+
+    // --- Basemap style overrides --------------------------------------------
+    // The stock Protomaps "light" flavor is close in structure (white roads,
+    // gray casings) but (a) reads as "not Google" via teal water, grayish land
+    // and white highways, and (b) renders labels/trails so faintly that its
+    // text seems to "float" and its detail vanishes next to the old OSM raster
+    // tiles. We retarget the relevant layers by id: a Google-alike palette,
+    // plus label halos matched to land/water (so text seats into the map like
+    // baked-in raster labels instead of floating), dashed earthy trails, and a
+    // broader POI whitelist. Applied as an override pass (not baked into the
+    // generated basemap_theme.js) so a future theme regeneration doesn't
+    // clobber it. Each entry may set `paint`, `layout`, and/or `filter`.
+    //
+    // NOTE: the tiles cap at z14 (see basemap.pmtiles), so deep-zoom richness
+    // that the OSM raster had at z15-19 can't be recovered here without
+    // re-extracting the PMTiles at a higher maxzoom (or reverting to raster).
+    const LAND = '#f2efe9';   // warm off-white land
+    const WATER = '#aadaff';  // pale sky-blue water
+    // POIs worth surfacing for an outdoor/coastal app; each POI carries its own
+    // min_zoom, so low-importance kinds stay hidden until you zoom in.
+    const POI_KINDS = [
+      'beach', 'forest', 'marina', 'park', 'peak', 'zoo', 'garden', 'bench',
+      'aerodrome', 'station', 'bus_stop', 'ferry_terminal', 'stadium',
+      'university', 'library', 'school', 'animal', 'toilets', 'drinking_water',
+      'viewpoint', 'monument', 'memorial', 'attraction', 'artwork', 'museum',
+      'picnic_site', 'camp_site', 'parking', 'lighthouse', 'waterfall',
+      'spring', 'hospital', 'place_of_worship', 'cafe', 'restaurant', 'hotel',
+      'theatre', 'cinema', 'castle',
+    ];
+    const OVERRIDES = {
+      // Palette
+      background: { paint: { 'background-color': LAND } },
+      earth: { paint: { 'fill-color': LAND } },
+      water: { paint: { 'fill-color': WATER } },
+      water_stream: { paint: { 'line-color': WATER } },
+      water_river: { paint: { 'line-color': WATER } },
+      landuse_park: { paint: { 'fill-color': '#c8e6c9' } },        // soft park green
+      landuse_urban_green: { paint: { 'fill-color': '#c8e6c9' } },
+      buildings: { paint: { 'fill-color': '#eeeae1' } },           // light gray-beige
+      // Signature Google touch: highways in yellow with an amber casing.
+      roads_highway: { paint: { 'line-color': '#f9d488' } },
+      roads_bridges_highway: { paint: { 'line-color': '#f9d488' } },
+      roads_highway_casing_early: { paint: { 'line-color': '#f2b872' } },
+      roads_highway_casing_late: { paint: { 'line-color': '#f2b872' } },
+      roads_bridges_highway_casing: { paint: { 'line-color': '#f2b872' } },
+      // Trails: give paths (kind=path, styled by roads_other) an OSM-Carto-ish
+      // dashed, terracotta stroke so park/coast trails read as trails.
+      roads_other: { paint: { 'line-color': '#c58f6e', 'line-dasharray': [3, 2] } },
+      roads_bridges_other: { paint: { 'line-color': '#c58f6e', 'line-dasharray': [3, 2] } },
+      // Labels: seat text into the map. A land/water-matched halo with a little
+      // blur (instead of a hard white outline) plus warmer, OSM-ish text colors
+      // stops the "floating" look.
+      places_locality: { paint: { 'text-color': '#4c4641', 'text-halo-color': LAND, 'text-halo-width': 1.5, 'text-halo-blur': 0.6 } },
+      places_subplace: { paint: { 'text-color': '#6f6862', 'text-halo-color': LAND, 'text-halo-width': 1.4, 'text-halo-blur': 0.6 } },
+      places_region: { paint: { 'text-halo-color': LAND, 'text-halo-blur': 0.6 } },
+      places_country: { paint: { 'text-halo-color': LAND, 'text-halo-blur': 0.6 } },
+      roads_labels_major: { paint: { 'text-color': '#5f5854', 'text-halo-color': '#ffffff', 'text-halo-width': 1.4, 'text-halo-blur': 0.4 } },
+      roads_labels_minor: { paint: { 'text-color': '#6f6862', 'text-halo-color': '#ffffff', 'text-halo-width': 1.2, 'text-halo-blur': 0.4 } },
+      water_label_ocean: { paint: { 'text-color': '#5a7bb5', 'text-halo-color': WATER, 'text-halo-blur': 0.5 } },
+      water_label_lakes: { paint: { 'text-color': '#5a7bb5', 'text-halo-color': WATER, 'text-halo-blur': 0.5 } },
+      water_waterway_label: { paint: { 'text-color': '#5a7bb5', 'text-halo-color': WATER, 'text-halo-blur': 0.5 } },
+      // Show more POIs and give their labels a land-matched halo too.
+      pois: {
+        paint: {
+          // The stock POI color only assigns real colors to nature/transit/civic
+          // kinds and lets everything else fall through to a near-white default
+          // (#e2dfda) that was ~invisible in the stock theme. Since we broadened
+          // POI_KINDS, that default surfaced as unreadable labels (e.g. parking).
+          // Keep the categorized colors, but give the fallback a readable dark.
+          'text-color': ['case',
+            ['in', ['get', 'kind'], ['literal', ['beach', 'forest', 'marina', 'park', 'peak', 'zoo', 'garden', 'bench']]], '#20834D',
+            ['in', ['get', 'kind'], ['literal', ['aerodrome', 'station', 'bus_stop', 'ferry_terminal', 'parking']]], '#315BCF',
+            ['in', ['get', 'kind'], ['literal', ['stadium', 'university', 'library', 'school', 'animal', 'toilets', 'drinking_water', 'hospital', 'place_of_worship']]], '#6A5B8F',
+            '#4a443f',
+          ],
+          'text-halo-color': LAND,
+          'text-halo-width': 1.6,
+          'text-halo-blur': 0.4,
+        },
+        filter: ['all',
+          ['in', ['get', 'kind'], ['literal', POI_KINDS]],
+          ['>=', ['zoom'], ['+', ['get', 'min_zoom'], 0]],
+        ],
+      },
+    };
+    for (const layer of themeLayers) {
+      const o = OVERRIDES[layer.id];
+      if (!o) continue;
+      if (o.paint) layer.paint = { ...layer.paint, ...o.paint };
+      if (o.layout) layer.layout = { ...layer.layout, ...o.layout };
+      if (o.filter) layer.filter = o.filter;
+    }
     const firstSymbolIdx = themeLayers.findIndex((l) => l.type === 'symbol');
     const visibilityLayer = {
       id: 'visibility',
       type: 'raster',
       source: 'visibility',
-      paint: { 'raster-opacity': 0.6, 'raster-resampling': 'nearest' },
+      // 'nearest' keeps the visibility cells crisp (the data is a per-cell
+      // bitmask; interpolation would imply resolution it doesn't have).
+      paint: { 'raster-opacity': 0.4, 'raster-resampling': 'nearest' },
     };
     const layers = firstSymbolIdx === -1
       ? [...themeLayers, visibilityLayer]
