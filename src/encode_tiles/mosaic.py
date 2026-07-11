@@ -1,39 +1,45 @@
-"""Build the base-zoom mosaic from packed bitmask GeoTIFFs (ADR-0013).
+"""Build the base-zoom mosaic strips from packed bitmask GeoTIFFs (ADR-0013).
 
-Multiple input boxes are first merged on one common EPSG:4326 lattice with
-overlaps resolved by deepest-interior wins (ADR-0015), then the single merged
-raster is read in row-strips and reprojected (nearest-neighbour,
-EPSG:4326 → EPSG:3857) directly into the corresponding row-strip of a
-pre-allocated base mosaic.  Bytes are carried verbatim — the encoder never
-interprets individual visibility bits.
+Multiple input boxes are merged on one common EPSG:4326 lattice with
+overlaps resolved by deepest-interior wins (ADR-0015).  Everything is
+streamed in row-strips so peak memory is bounded by one strip, never a
+whole box or a whole mosaic: the merge windows its sources straight from
+disk and writes a temporary compressed GeoTIFF, and the 4326 → 3857
+base-zoom reproject yields one tile-row strip at a time.  Bytes are carried
+verbatim — the encoder never interprets individual visibility bits.
 """
 
 from __future__ import annotations
 
 import math
+import tempfile
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Sequence
+from typing import Iterator, Sequence
 
 import numpy as np
 import rasterio
-from rasterio.io import MemoryFile
-from rasterio.transform import from_bounds, from_origin
-from rasterio.transform import Affine
+from rasterio.transform import Affine, from_bounds, from_origin
 from rasterio.warp import Resampling, reproject, transform_bounds
 from rasterio.windows import Window
 from rasterio.windows import bounds as window_bounds
+from rasterio.windows import from_bounds as window_from_bounds
 
 WEB_MERCATOR_EXTENT = 20037508.342789244
 TILE_SIZE = 512
-SRC_STRIP_HEIGHT = 256
+# Rows per merged-lattice strip; also the merged GeoTIFF's block height so
+# every strip write lands on whole compressed blocks exactly once.
+MERGE_STRIP_HEIGHT = 512
+# Extra source pixels read around each reprojected strip so nearest-neighbour
+# lookups at strip edges never fall outside the window.
+SRC_WINDOW_MARGIN = 2
 
 
 @dataclass(frozen=True)
-class BaseMosaic:
-    """The base-zoom bitmask mosaic and the tile grid it covers."""
+class MosaicSpec:
+    """The base-zoom tile grid and format metadata — geometry only, no pixels."""
 
-    data: np.ndarray  # (H, W, bytes_per_pixel) uint8
     zoom: int
     tile_xmin: int
     tile_xmax: int  # inclusive
@@ -116,6 +122,37 @@ def _read_format_contract(src: rasterio.DatasetReader) -> FormatContract:
     )
 
 
+def _merge_window(
+    merged: np.ndarray,
+    best: np.ndarray,
+    data: np.ndarray,
+    src_height: int,
+    src_width: int,
+    src_row0: int,
+    dst_row0: int,
+    dst_col0: int,
+) -> None:
+    """Merge one source's row-window into a strip of the output lattice.
+
+    `data` holds rows [src_row0, src_row0 + rh) of a (src_height, src_width)
+    source box; `merged`/`best` are the lattice strip and its running
+    interior-distance scores, with the window landing at (dst_row0, dst_col0).
+    The distance ramps depend only on global source geometry, so merging
+    strip-by-strip is byte-identical to merging the whole lattice at once.
+    """
+    rh = data.shape[0]
+    rows = np.arange(src_row0, src_row0 + rh, dtype=np.float32) + 0.5
+    dist_ns = np.minimum(rows, src_height - rows)  # nearest of north/south edge
+    cols = np.arange(src_width, dtype=np.float32)
+    dist_e = src_width - cols - 0.5  # east edge only; west (offshore) excluded
+    dist = np.minimum(dist_ns[:, None], dist_e[None, :])
+
+    best_sub = best[dst_row0 : dst_row0 + rh, dst_col0 : dst_col0 + src_width]
+    wins = dist > best_sub  # strict: an exact tie keeps the earlier source
+    best_sub[wins] = dist[wins]
+    merged[dst_row0 : dst_row0 + rh, dst_col0 : dst_col0 + src_width][wins] = data[wins]
+
+
 def merge_deepest_interior(
     sources: Sequence[np.ndarray],
     offsets: Sequence[tuple[int, int]],
@@ -148,24 +185,12 @@ def merge_deepest_interior(
             raise ValueError("all sources must share bytes_per_pixel")
         if row_off < 0 or col_off < 0 or row_off + h > out_height or col_off + w > out_width:
             raise ValueError("source placement exceeds the output lattice")
-
-        rows = np.arange(h, dtype=np.float32) + 0.5  # pixel-centre distance to north edge
-        cols = np.arange(w, dtype=np.float32)
-        dist_ns = np.minimum(rows, h - rows)  # nearest of north/south edge
-        dist_e = w - cols - 0.5  # east edge only; west (offshore) excluded
-        dist = np.minimum(dist_ns[:, None], dist_e[None, :])
-
-        best_sub = best[row_off : row_off + h, col_off : col_off + w]
-        wins = dist > best_sub  # strict: an exact tie keeps the earlier source
-        best_sub[wins] = dist[wins]
-        merged[row_off : row_off + h, col_off : col_off + w][wins] = data[wins]
+        _merge_window(merged, best, data, h, w, 0, row_off, col_off)
 
     return merged
 
 
-def merge_sources(
-    input_paths: Sequence[Path],
-) -> tuple[np.ndarray, Affine, FormatContract]:
+def merge_sources(input_paths: Sequence[Path], dst_path: Path) -> FormatContract:
     """Paste all input boxes onto one common 4326 lattice (ADR-0015).
 
     The lattice is anchored at the union's north-west corner on the first
@@ -173,120 +198,123 @@ def merge_sources(
     share the format contract, CRS, and resolution — a mismatch raises
     ValueError so the CLI aborts nonzero rather than silently merging
     incompatible tilesets.
+
+    The merge is streamed in MERGE_STRIP_HEIGHT-row strips: each source is
+    windowed straight from disk and the merged raster is written strip by
+    strip to `dst_path` as a compressed GeoTIFF, so neither a whole box nor
+    the whole lattice is ever resident in memory.
     """
-    metas = []
-    for path in input_paths:
-        with rasterio.open(path) as src:
-            bands = list(range(1, src.count + 1))
-            data = src.read(bands, masked=False).astype(np.uint8, copy=False)
-            metas.append(
-                {
-                    "path": path,
-                    "contract": _read_format_contract(src),
-                    "crs": src.crs,
-                    "res": src.res,
-                    "bounds": src.bounds,
-                    "data": data.transpose(1, 2, 0),  # (h, w, bytes_per_pixel)
-                }
+    with ExitStack() as stack:
+        datasets = [stack.enter_context(rasterio.open(p)) for p in input_paths]
+        contracts = [_read_format_contract(ds) for ds in datasets]
+        first_ds = datasets[0]
+        first_contract = contracts[0]
+        for path, ds, contract in zip(input_paths[1:], datasets[1:], contracts[1:]):
+            if contract != first_contract:
+                raise ValueError(
+                    "format contract mismatch: "
+                    f"{path} has {contract} "
+                    f"but {input_paths[0]} has {first_contract}"
+                )
+            if ds.crs != first_ds.crs:
+                raise ValueError(
+                    f"CRS mismatch: {path} is {ds.crs}, "
+                    f"{input_paths[0]} is {first_ds.crs}"
+                )
+            if not math.isclose(ds.res[0], first_ds.res[0], rel_tol=1e-6) or not (
+                math.isclose(ds.res[1], first_ds.res[1], rel_tol=1e-6)
+            ):
+                raise ValueError(
+                    f"resolution mismatch: {path} is {ds.res}, "
+                    f"{input_paths[0]} is {first_ds.res}"
+                )
+
+        res_x, res_y = first_ds.res
+        lattice_west = min(ds.bounds.left for ds in datasets)
+        lattice_north = max(ds.bounds.top for ds in datasets)
+
+        offsets = []
+        out_height = 0
+        out_width = 0
+        for ds in datasets:
+            # Snap each box onto the lattice (≤ ½ cell by rounding; resolutions
+            # were validated equal above, so the error cannot accumulate).
+            row_off = int(round((lattice_north - ds.bounds.top) / res_y))
+            col_off = int(round((ds.bounds.left - lattice_west) / res_x))
+            offsets.append((row_off, col_off))
+            out_height = max(out_height, row_off + ds.height)
+            out_width = max(out_width, col_off + ds.width)
+
+        bytes_per_pixel = first_contract.bytes_per_pixel
+        transform = from_origin(lattice_west, lattice_north, res_x, res_y)
+        dst = stack.enter_context(
+            rasterio.open(
+                dst_path,
+                "w",
+                driver="GTiff",
+                width=out_width,
+                height=out_height,
+                count=bytes_per_pixel,
+                dtype="uint8",
+                crs=first_ds.crs,
+                transform=transform,
+                tiled=True,
+                blockxsize=TILE_SIZE,
+                blockysize=MERGE_STRIP_HEIGHT,
+                compress="deflate",
+                bigtiff="if_safer",
             )
+        )
 
-    first = metas[0]
-    for m in metas[1:]:
-        if m["contract"] != first["contract"]:
-            raise ValueError(
-                "format contract mismatch: "
-                f"{m['path']} has {m['contract']} "
-                f"but {first['path']} has {first['contract']}"
-            )
-        if m["crs"] != first["crs"]:
-            raise ValueError(
-                f"CRS mismatch: {m['path']} is {m['crs']}, "
-                f"{first['path']} is {first['crs']}"
-            )
-        if not math.isclose(m["res"][0], first["res"][0], rel_tol=1e-6) or not (
-            math.isclose(m["res"][1], first["res"][1], rel_tol=1e-6)
-        ):
-            raise ValueError(
-                f"resolution mismatch: {m['path']} is {m['res']}, "
-                f"{first['path']} is {first['res']}"
-            )
+        for r0 in range(0, out_height, MERGE_STRIP_HEIGHT):
+            rh = min(MERGE_STRIP_HEIGHT, out_height - r0)
+            merged = np.zeros((rh, out_width, bytes_per_pixel), dtype=np.uint8)
+            best = np.full((rh, out_width), -np.inf, dtype=np.float32)
+            for ds, (row_off, col_off) in zip(datasets, offsets):
+                sr0 = max(0, r0 - row_off)
+                sr1 = min(ds.height, r0 + rh - row_off)
+                if sr1 <= sr0:
+                    continue
+                window = Window(0, sr0, ds.width, sr1 - sr0)
+                data = (
+                    ds.read(window=window, masked=False)
+                    .astype(np.uint8, copy=False)
+                    .transpose(1, 2, 0)
+                )
+                _merge_window(
+                    merged, best, data, ds.height, ds.width, sr0, row_off + sr0 - r0, col_off
+                )
+            dst.write(merged.transpose(2, 0, 1), window=Window(0, r0, out_width, rh))
 
-    res_x, res_y = first["res"]
-    lattice_west = min(m["bounds"].left for m in metas)
-    lattice_north = max(m["bounds"].top for m in metas)
-
-    sources = []
-    offsets = []
-    out_height = 0
-    out_width = 0
-    for m in metas:
-        # Snap each box onto the lattice (≤ ½ cell by rounding; resolutions
-        # were validated equal above, so the error cannot accumulate).
-        row_off = int(round((lattice_north - m["bounds"].top) / res_y))
-        col_off = int(round((m["bounds"].left - lattice_west) / res_x))
-        h, w, _ = m["data"].shape
-        sources.append(m["data"])
-        offsets.append((row_off, col_off))
-        out_height = max(out_height, row_off + h)
-        out_width = max(out_width, col_off + w)
-
-    merged = merge_deepest_interior(sources, offsets, out_height, out_width)
-    transform = from_origin(lattice_west, lattice_north, res_x, res_y)
-    return merged, transform, first["contract"]
+    return first_contract
 
 
-def encode_sources_to_base_raster(
-    input_paths: Sequence[Path], zoom: int
-) -> BaseMosaic:
-    """Encode one or more bitmask GeoTIFFs into the base-zoom 3857 mosaic.
+@contextmanager
+def open_mosaic_source(
+    input_paths: Sequence[Path],
+) -> Iterator[tuple[rasterio.DatasetReader, FormatContract]]:
+    """Open the single dataset the base-zoom encode reads from.
 
-    A single input takes exactly the pre-multi-box path.  Multiple inputs are
-    merged on a common 4326 lattice first (deepest-interior wins, ADR-0015),
-    then the one merged raster goes through the same unchanged 4326 → 3857
-    reproject-and-tile pass.
+    A single input is opened directly — exactly the pre-multi-box path.
+    Multiple inputs are first stream-merged (deepest-interior wins, ADR-0015)
+    into a temporary compressed GeoTIFF that is deleted on exit.
     """
     if len(input_paths) == 1:
-        return encode_source_to_base_raster(input_paths[0], zoom)
+        with rasterio.open(input_paths[0]) as src:
+            yield src, _read_format_contract(src)
+        return
 
-    merged, transform, contract = merge_sources(input_paths)
-    height, width, bytes_per_pixel = merged.shape
-    with MemoryFile() as memfile:
-        with memfile.open(
-            driver="GTiff",
-            width=width,
-            height=height,
-            count=bytes_per_pixel,
-            dtype="uint8",
-            crs="EPSG:4326",
-            transform=transform,
-        ) as dst:
-            dst.write(merged.transpose(2, 0, 1))
-            dst.update_tags(
-                azimuth_min_deg=str(contract.azimuth_min_deg),
-                azimuth_max_deg=str(contract.azimuth_max_deg),
-                azimuth_step_deg=str(contract.azimuth_step_deg),
-                bit_count=str(contract.bit_count),
-                format_version=str(contract.format_version),
-            )
-        with memfile.open() as src:
-            return _encode_open_source(src, zoom)
+    with tempfile.TemporaryDirectory(prefix="encode_tiles_") as tmp_dir:
+        merged_path = Path(tmp_dir) / "merged.tif"
+        contract = merge_sources(input_paths, merged_path)
+        with rasterio.open(merged_path) as src:
+            yield src, contract
 
 
-def encode_source_to_base_raster(input_path: Path, zoom: int) -> BaseMosaic:
-    """Read the packed bitmask GeoTIFF and reproject to EPSG:3857 at base zoom.
-
-    Each source band is one byte of the per-pixel bitmask.  Bytes are carried
-    verbatim using nearest-neighbour resampling; no encoding is applied.
-    Azimuth metadata is read from the GeoTIFF tags written by the engine.
-    """
-    with rasterio.open(input_path) as src:
-        return _encode_open_source(src, zoom)
-
-
-def _encode_open_source(src: rasterio.DatasetReader, zoom: int) -> BaseMosaic:
-    """Reproject one open bitmask dataset to EPSG:3857 at base zoom."""
-    bytes_per_pixel = src.count
-    src_crs = src.crs
+def compute_base_spec(
+    src: rasterio.DatasetReader, contract: FormatContract, zoom: int
+) -> MosaicSpec:
+    """The base-zoom 3857 tile grid covering one open bitmask dataset."""
     src_bounds = src.bounds
     data_bounds_4326 = (
         float(src_bounds.left),
@@ -294,78 +322,83 @@ def _encode_open_source(src: rasterio.DatasetReader, zoom: int) -> BaseMosaic:
         float(src_bounds.right),
         float(src_bounds.top),
     )
-
-    tags = src.tags()
-    azimuth_min_deg = float(tags["azimuth_min_deg"])
-    azimuth_max_deg = float(tags["azimuth_max_deg"])
-    azimuth_step_deg = float(tags["azimuth_step_deg"])
-    bit_count = int(tags["bit_count"])
-    format_version = int(tags["format_version"])
-
     bounds_3857 = transform_bounds(
-        src_crs, "EPSG:3857", *data_bounds_4326, densify_pts=21
+        src.crs, "EPSG:3857", *data_bounds_4326, densify_pts=21
     )
     tile_xmin, tile_xmax, tile_ymin, tile_ymax = _tile_range_for_bounds_3857(
         bounds_3857, zoom
     )
-    raster_bounds, width, height, dst_transform = _base_raster_geometry(
-        tile_xmin, tile_xmax, tile_ymin, tile_ymax, zoom
-    )
-    dst_north = raster_bounds[3]
-
-    base_data = np.zeros((height, width, bytes_per_pixel), dtype=np.uint8)
-    band_indices = list(range(1, bytes_per_pixel + 1))
-
-    for r0 in range(0, src.height, SRC_STRIP_HEIGHT):
-        rh = min(SRC_STRIP_HEIGHT, src.height - r0)
-        window = Window(0, r0, src.width, rh)
-        src_strip = src.read(band_indices, window=window, masked=False).astype(
-            np.uint8, copy=False
-        )  # shape: (bytes_per_pixel, rh, src.width)
-
-        src_strip_transform = src.window_transform(window)
-        strip_bounds_src = window_bounds(window, src.transform)
-        strip_bounds_3857 = transform_bounds(
-            src_crs, "EPSG:3857", *strip_bounds_src, densify_pts=21
-        )
-        base_res_y = (raster_bounds[3] - raster_bounds[1]) / height
-        dy_top = int(math.floor((dst_north - strip_bounds_3857[3]) / base_res_y))
-        dy_bot = int(math.ceil((dst_north - strip_bounds_3857[1]) / base_res_y))
-        dy_top = max(0, dy_top)
-        dy_bot = min(height, dy_bot)
-        if dy_bot <= dy_top:
-            continue
-
-        dst_strip = np.zeros(
-            (bytes_per_pixel, dy_bot - dy_top, width), dtype=np.uint8
-        )
-        dst_strip_transform = dst_transform * Affine.translation(0, dy_top)
-        reproject(
-            source=src_strip,
-            destination=dst_strip,
-            src_transform=src_strip_transform,
-            src_crs=src_crs,
-            src_nodata=None,
-            dst_transform=dst_strip_transform,
-            dst_crs="EPSG:3857",
-            dst_nodata=None,
-            resampling=Resampling.nearest,
-        )
-        # transpose (bytes_per_pixel, H, W) → (H, W, bytes_per_pixel)
-        base_data[dy_top:dy_bot, :, :] = dst_strip.transpose(1, 2, 0)
-
-    return BaseMosaic(
-        data=base_data,
+    return MosaicSpec(
         zoom=zoom,
         tile_xmin=tile_xmin,
         tile_xmax=tile_xmax,
         tile_ymin=tile_ymin,
         tile_ymax=tile_ymax,
         data_bounds_4326=data_bounds_4326,
-        azimuth_min_deg=azimuth_min_deg,
-        azimuth_max_deg=azimuth_max_deg,
-        azimuth_step_deg=azimuth_step_deg,
-        bit_count=bit_count,
-        bytes_per_pixel=bytes_per_pixel,
-        format_version=format_version,
+        azimuth_min_deg=contract.azimuth_min_deg,
+        azimuth_max_deg=contract.azimuth_max_deg,
+        azimuth_step_deg=contract.azimuth_step_deg,
+        bit_count=contract.bit_count,
+        bytes_per_pixel=contract.bytes_per_pixel,
+        format_version=contract.format_version,
     )
+
+
+def _clipped_source_window(
+    src: rasterio.DatasetReader, bounds_3857: tuple[float, float, float, float]
+) -> Window | None:
+    """The source pixel window covering the 3857 bounds, padded and clipped.
+
+    Returns None when the bounds fall entirely outside the source raster.
+    """
+    bounds_src = transform_bounds("EPSG:3857", src.crs, *bounds_3857, densify_pts=21)
+    window = window_from_bounds(*bounds_src, transform=src.transform)
+    r0 = max(0, int(math.floor(window.row_off)) - SRC_WINDOW_MARGIN)
+    r1 = min(src.height, int(math.ceil(window.row_off + window.height)) + SRC_WINDOW_MARGIN)
+    c0 = max(0, int(math.floor(window.col_off)) - SRC_WINDOW_MARGIN)
+    c1 = min(src.width, int(math.ceil(window.col_off + window.width)) + SRC_WINDOW_MARGIN)
+    if r1 <= r0 or c1 <= c0:
+        return None
+    return Window(c0, r0, c1 - c0, r1 - r0)
+
+
+def iter_base_tile_rows(
+    src: rasterio.DatasetReader, spec: MosaicSpec
+) -> Iterator[tuple[int, np.ndarray]]:
+    """Yield (tile_y, strip) for every base-zoom tile row, north to south.
+
+    Each strip is a (TILE_SIZE, mosaic_width, bytes_per_pixel) uint8 array in
+    EPSG:3857, reprojected nearest-neighbour from just the source window that
+    tile row needs — only one strip and one source window are ever resident.
+    Each source band is one byte of the per-pixel bitmask; bytes are carried
+    verbatim, and pixels no source covers stay all-zero (transparent).
+    """
+    _, width, _, dst_transform = _base_raster_geometry(
+        spec.tile_xmin, spec.tile_xmax, spec.tile_ymin, spec.tile_ymax, spec.zoom
+    )
+    band_indices = list(range(1, spec.bytes_per_pixel + 1))
+
+    for ti, ty in enumerate(range(spec.tile_ymin, spec.tile_ymax + 1)):
+        strip_window = Window(0, ti * TILE_SIZE, width, TILE_SIZE)
+        strip_bounds_3857 = window_bounds(strip_window, dst_transform)
+        strip = np.zeros((spec.bytes_per_pixel, TILE_SIZE, width), dtype=np.uint8)
+
+        src_window = _clipped_source_window(src, strip_bounds_3857)
+        if src_window is not None:
+            src_data = src.read(band_indices, window=src_window, masked=False).astype(
+                np.uint8, copy=False
+            )
+            reproject(
+                source=src_data,
+                destination=strip,
+                src_transform=src.window_transform(src_window),
+                src_crs=src.crs,
+                src_nodata=None,
+                dst_transform=dst_transform * Affine.translation(0, ti * TILE_SIZE),
+                dst_crs="EPSG:3857",
+                dst_nodata=None,
+                resampling=Resampling.nearest,
+            )
+
+        # transpose (bytes_per_pixel, H, W) → (H, W, bytes_per_pixel)
+        yield ty, strip.transpose(1, 2, 0)

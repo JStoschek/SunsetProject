@@ -9,7 +9,12 @@ import sys
 from pathlib import Path
 from typing import Sequence
 
-from encode_tiles.mosaic import TILE_SIZE, encode_sources_to_base_raster
+from encode_tiles.mosaic import (
+    TILE_SIZE,
+    compute_base_spec,
+    iter_base_tile_rows,
+    open_mosaic_source,
+)
 from encode_tiles.tilejson import build_tilejson
 from encode_tiles.tiles import build_pyramid
 
@@ -131,29 +136,30 @@ def main(argv: Sequence[str] | None = None) -> int:
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
     try:
-        mosaic = encode_sources_to_base_raster(inputs, zoom=args.max_zoom)
+        with open_mosaic_source(inputs) as (src, contract):
+            spec = compute_base_spec(src, contract, zoom=args.max_zoom)
+            build_pyramid(
+                iter_base_tile_rows(src, spec),
+                spec,
+                min_zoom=args.min_zoom,
+                output_dir=args.output_dir,
+                compress_level=args.compress_level,
+            )
     except (ValueError, KeyError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
 
-    build_pyramid(
-        mosaic,
-        min_zoom=args.min_zoom,
-        output_dir=args.output_dir,
-        compress_level=args.compress_level,
-    )
-
     tilejson = build_tilejson(
-        bounds=mosaic.data_bounds_4326,
+        bounds=spec.data_bounds_4326,
         minzoom=args.min_zoom,
         maxzoom=args.max_zoom,
         tile_size=TILE_SIZE,
-        format_version=mosaic.format_version,
-        azimuth_min_deg=mosaic.azimuth_min_deg,
-        azimuth_max_deg=mosaic.azimuth_max_deg,
-        azimuth_step_deg=mosaic.azimuth_step_deg,
-        bit_count=mosaic.bit_count,
-        bytes_per_pixel=mosaic.bytes_per_pixel,
+        format_version=spec.format_version,
+        azimuth_min_deg=spec.azimuth_min_deg,
+        azimuth_max_deg=spec.azimuth_max_deg,
+        azimuth_step_deg=spec.azimuth_step_deg,
+        bit_count=spec.bit_count,
+        bytes_per_pixel=spec.bytes_per_pixel,
     )
     (args.output_dir / "tilejson.json").write_text(json.dumps(tilejson, indent=2))
 
