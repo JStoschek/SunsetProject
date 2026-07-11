@@ -261,7 +261,13 @@ def merge_sources(input_paths: Sequence[Path], dst_path: Path) -> FormatContract
                 tiled=True,
                 blockxsize=TILE_SIZE,
                 blockysize=MERGE_STRIP_HEIGHT,
+                # The merged raster is a throwaway intermediate: cheapest
+                # deflate level (it re-reads faster too), skip all-zero
+                # blocks entirely, and compress on every core.
                 compress="deflate",
+                zlevel=1,
+                sparse_ok=True,
+                num_threads="ALL_CPUS",
                 bigtiff="if_safer",
             )
         )
@@ -298,17 +304,21 @@ def open_mosaic_source(
     A single input is opened directly — exactly the pre-multi-box path.
     Multiple inputs are first stream-merged (deepest-interior wins, ADR-0015)
     into a temporary compressed GeoTIFF that is deleted on exit.
-    """
-    if len(input_paths) == 1:
-        with rasterio.open(input_paths[0]) as src:
-            yield src, _read_format_contract(src)
-        return
 
-    with tempfile.TemporaryDirectory(prefix="encode_tiles_") as tmp_dir:
-        merged_path = Path(tmp_dir) / "merged.tif"
-        contract = merge_sources(input_paths, merged_path)
-        with rasterio.open(merged_path) as src:
-            yield src, contract
+    GDAL_NUM_THREADS stays set for the whole encode so GeoTIFF deflate
+    codecs (and the warper, which defaults to it) use every core.
+    """
+    with rasterio.Env(GDAL_NUM_THREADS="ALL_CPUS"):
+        if len(input_paths) == 1:
+            with rasterio.open(input_paths[0]) as src:
+                yield src, _read_format_contract(src)
+            return
+
+        with tempfile.TemporaryDirectory(prefix="encode_tiles_") as tmp_dir:
+            merged_path = Path(tmp_dir) / "merged.tif"
+            contract = merge_sources(input_paths, merged_path)
+            with rasterio.open(merged_path) as src:
+                yield src, contract
 
 
 def compute_base_spec(
@@ -363,15 +373,18 @@ def _clipped_source_window(
 
 
 def iter_base_tile_rows(
-    src: rasterio.DatasetReader, spec: MosaicSpec
+    src: rasterio.DatasetReader, spec: MosaicSpec, num_threads: int = 1
 ) -> Iterator[tuple[int, np.ndarray]]:
     """Yield (tile_y, strip) for every base-zoom tile row, north to south.
 
-    Each strip is a (TILE_SIZE, mosaic_width, bytes_per_pixel) uint8 array in
-    EPSG:3857, reprojected nearest-neighbour from just the source window that
-    tile row needs — only one strip and one source window are ever resident.
-    Each source band is one byte of the per-pixel bitmask; bytes are carried
-    verbatim, and pixels no source covers stay all-zero (transparent).
+    Each strip is a (bytes_per_pixel, TILE_SIZE, mosaic_width) uint8 array —
+    band-major, matching the warp's native layout so no full-strip transpose
+    copies happen downstream — in EPSG:3857, reprojected nearest-neighbour
+    from just the source window that tile row needs; only one strip and one
+    source window are ever resident.  Each source band is one byte of the
+    per-pixel bitmask; bytes are carried verbatim, and pixels no source
+    covers stay all-zero (transparent).  `num_threads` fans the warp kernel
+    out across cores.
     """
     _, width, _, dst_transform = _base_raster_geometry(
         spec.tile_xmin, spec.tile_xmax, spec.tile_ymin, spec.tile_ymax, spec.zoom
@@ -398,7 +411,7 @@ def iter_base_tile_rows(
                 dst_crs="EPSG:3857",
                 dst_nodata=None,
                 resampling=Resampling.nearest,
+                num_threads=num_threads,
             )
 
-        # transpose (bytes_per_pixel, H, W) → (H, W, bytes_per_pixel)
-        yield ty, strip.transpose(1, 2, 0)
+        yield ty, strip

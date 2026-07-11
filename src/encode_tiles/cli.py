@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
 import sys
 from pathlib import Path
@@ -73,6 +74,15 @@ def build_parser() -> argparse.ArgumentParser:
             "~12%% larger tiles; 9 is smallest but slowest."
         ),
     )
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=os.cpu_count() or 4,
+        help=(
+            "Threads for tile compression and the warp kernel "
+            "(default: all cores)."
+        ),
+    )
     return parser
 
 
@@ -131,6 +141,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         return 2
 
+    if args.workers < 1:
+        print(f"error: --workers ({args.workers}) must be >= 1", file=sys.stderr)
+        return 2
+
     if args.output_dir.exists():
         shutil.rmtree(args.output_dir)
     args.output_dir.mkdir(parents=True, exist_ok=True)
@@ -139,11 +153,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         with open_mosaic_source(inputs) as (src, contract):
             spec = compute_base_spec(src, contract, zoom=args.max_zoom)
             build_pyramid(
-                iter_base_tile_rows(src, spec),
+                iter_base_tile_rows(src, spec, num_threads=args.workers),
                 spec,
                 min_zoom=args.min_zoom,
                 output_dir=args.output_dir,
                 compress_level=args.compress_level,
+                workers=args.workers,
             )
     except (ValueError, KeyError) as exc:
         print(f"error: {exc}", file=sys.stderr)
