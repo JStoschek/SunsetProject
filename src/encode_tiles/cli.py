@@ -10,6 +10,7 @@ import sys
 from pathlib import Path
 from typing import Sequence
 
+from encode_tiles import progress
 from encode_tiles.mosaic import (
     TILE_SIZE,
     compute_base_spec,
@@ -83,6 +84,11 @@ def build_parser() -> argparse.ArgumentParser:
             "(default: all cores)."
         ),
     )
+    parser.add_argument(
+        "--no-progress",
+        action="store_true",
+        help="Suppress the progress bars (auto-off when stderr is not a terminal).",
+    )
     return parser
 
 
@@ -149,11 +155,23 @@ def main(argv: Sequence[str] | None = None) -> int:
         shutil.rmtree(args.output_dir)
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
+    show_progress = progress.enabled(args.no_progress)
+    merge_bar = progress.MergeBar() if show_progress else None
+
     try:
-        with open_mosaic_source(inputs) as (src, contract):
+        with open_mosaic_source(inputs, merge_bar) as (src, contract):
+            if merge_bar is not None:
+                merge_bar.close()  # merge is done once the context is entered
             spec = compute_base_spec(src, contract, zoom=args.max_zoom)
+            rows = iter_base_tile_rows(src, spec, num_threads=args.workers)
+            if show_progress:
+                rows = progress.wrap_rows(
+                    rows,
+                    total=spec.tile_ymax - spec.tile_ymin + 1,
+                    desc="encoding tiles",
+                )
             build_pyramid(
-                iter_base_tile_rows(src, spec, num_threads=args.workers),
+                rows,
                 spec,
                 min_zoom=args.min_zoom,
                 output_dir=args.output_dir,
@@ -163,6 +181,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     except (ValueError, KeyError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
+    finally:
+        if merge_bar is not None:
+            merge_bar.close()
 
     tilejson = build_tilejson(
         bounds=spec.data_bounds_4326,

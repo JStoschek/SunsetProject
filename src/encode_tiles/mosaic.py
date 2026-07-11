@@ -16,7 +16,7 @@ import tempfile
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterator, Sequence
+from typing import Callable, Iterator, Sequence
 
 import numpy as np
 import rasterio
@@ -191,7 +191,11 @@ def merge_deepest_interior(
     return merged
 
 
-def merge_sources(input_paths: Sequence[Path], dst_path: Path) -> FormatContract:
+def merge_sources(
+    input_paths: Sequence[Path],
+    dst_path: Path,
+    on_progress: Callable[[int, int], None] | None = None,
+) -> FormatContract:
     """Paste all input boxes onto one common 4326 lattice (ADR-0015).
 
     The lattice is anchored at the union's north-west corner on the first
@@ -203,7 +207,8 @@ def merge_sources(input_paths: Sequence[Path], dst_path: Path) -> FormatContract
     The merge is streamed in MERGE_STRIP_HEIGHT-row strips: each source is
     windowed straight from disk and the merged raster is written strip by
     strip to `dst_path` as a compressed GeoTIFF, so neither a whole box nor
-    the whole lattice is ever resident in memory.
+    the whole lattice is ever resident in memory.  `on_progress`, if given,
+    is called after each strip with (completed_strips, total_strips).
     """
     with ExitStack() as stack:
         datasets = [stack.enter_context(rasterio.open(p)) for p in input_paths]
@@ -273,7 +278,8 @@ def merge_sources(input_paths: Sequence[Path], dst_path: Path) -> FormatContract
             )
         )
 
-        for r0 in range(0, out_height, MERGE_STRIP_HEIGHT):
+        total_strips = math.ceil(out_height / MERGE_STRIP_HEIGHT)
+        for strip_idx, r0 in enumerate(range(0, out_height, MERGE_STRIP_HEIGHT)):
             rh = min(MERGE_STRIP_HEIGHT, out_height - r0)
             merged = np.zeros((rh, out_width, bytes_per_pixel), dtype=np.uint8)
             best = np.full((rh, out_width), -np.inf, dtype=np.float32)
@@ -292,6 +298,8 @@ def merge_sources(input_paths: Sequence[Path], dst_path: Path) -> FormatContract
                     merged, best, data, ds.height, ds.width, sr0, row_off + sr0 - r0, col_off
                 )
             dst.write(merged.transpose(2, 0, 1), window=Window(0, r0, out_width, rh))
+            if on_progress is not None:
+                on_progress(strip_idx + 1, total_strips)
 
     return first_contract
 
@@ -299,12 +307,14 @@ def merge_sources(input_paths: Sequence[Path], dst_path: Path) -> FormatContract
 @contextmanager
 def open_mosaic_source(
     input_paths: Sequence[Path],
+    on_merge_progress: Callable[[int, int], None] | None = None,
 ) -> Iterator[tuple[rasterio.DatasetReader, FormatContract]]:
     """Open the single dataset the base-zoom encode reads from.
 
     A single input is opened directly — exactly the pre-multi-box path.
     Multiple inputs are first stream-merged (deepest-interior wins, ADR-0015)
-    into a temporary compressed GeoTIFF that is deleted on exit.
+    into a temporary compressed GeoTIFF that is deleted on exit; that merge
+    reports strip progress through `on_merge_progress` when given.
 
     GDAL_NUM_THREADS stays set for the whole encode so GeoTIFF deflate
     codecs (and the warper, which defaults to it) use every core.
@@ -317,7 +327,7 @@ def open_mosaic_source(
 
         with tempfile.TemporaryDirectory(prefix="encode_tiles_") as tmp_dir:
             merged_path = Path(tmp_dir) / "merged.tif"
-            contract = merge_sources(input_paths, merged_path)
+            contract = merge_sources(input_paths, merged_path, on_merge_progress)
             with rasterio.open(merged_path) as src:
                 yield src, contract
 
