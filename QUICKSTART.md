@@ -61,6 +61,15 @@ python3 scripts/dev_server.py 8080 --directory frontend
 Plain `python3 -m http.server` will load the app but the basemap tiles will
 fail with "storage backend supports HTTP Byte Serving".
 
+### Processing Box editor
+`http://localhost:8080/boxes.html` (needs `scripts/dev_server.py`, which
+serves and writes the repo-root `boxes.json` at `/boxes.json` — its ONE
+writable path). Shows the visibility overlay for a chosen date, plus every
+box in the manifest: create ("New box" → drag), edit (drag corners or body
+of the selected box), delete, then **Save** to rewrite the `boxes` array
+(`engine`/`config`/`output_dir` round-trip untouched). No offshore check —
+the engine still rejects a mis-anchored box at run time.
+
 ## Pipeline Tools
 
 ### Encode the Visible Azimuth Set to tiles
@@ -186,3 +195,11 @@ python3 -m run_boxes boxes.json && \
 python3 -m encode_tiles --input build/boxes --output-dir frontend/tiles/ && \
 python3 scripts/dev_server.py 8080 --directory frontend
 ```
+
+```bash
+cmake --build build-release && \
+python3 -m run_boxes boxes.json && \
+python3 -m encode_tiles --input build/boxes --output-dir frontend/tiles/ && \
+python3 scripts/dev_server.py 8080 --directory frontend
+```
+"http://localhost:8080/boxes.html"

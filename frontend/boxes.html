@@ -1,0 +1,578 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Processing Box Editor</title>
+
+  <!-- Self-hosted map libs (vendored, no third-party CDN). See frontend/vendor/. -->
+  <link href="vendor/maplibre-gl.css" rel="stylesheet" />
+  <script src="vendor/maplibre-gl.js"></script>
+  <script src="vendor/pmtiles.js"></script>
+  <script src="vendor/basemap_theme.js"></script>
+  <!-- SunCalc (vendored). Attaches global SunCalc; sunset_azimuth.js needs it. -->
+  <script src="vendor/suncalc.js"></script>
+  <!-- Pure modules; UMD attaches sunsetAzimuth / BitLayout / colorizeBitmaskPixel / assertSupportedFormatVersion globals. -->
+  <script src="sunset_azimuth.js"></script>
+  <script src="bit_layout.js"></script>
+  <script src="colorizer.js"></script>
+  <script src="format_guard.js"></script>
+
+  <style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; overflow: hidden; }
+  body { font: 13px/1.45 ui-monospace, Menlo, monospace; background: #14110c; color: #e8e2d6; }
+
+  #panel {
+    position: fixed; inset: 0 auto 0 0; width: 320px; z-index: 3;
+    background: #1d1913; border-right: 1px solid #3a332a;
+    display: flex; flex-direction: column;
+  }
+  #panel header { padding: 14px 16px 10px; border-bottom: 1px solid #3a332a; }
+  #panel h1 { margin: 0 0 2px; font-size: 15px; font-weight: 700; }
+  #panel .sub { color: #9a917f; font-size: 11px; }
+
+  .controls { padding: 12px 16px; border-bottom: 1px solid #3a332a; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  .controls label { color: #9a917f; font-size: 11px; }
+  input[type="date"] {
+    background: #2a2419; color: #e8e2d6; border: 1px solid #4a4234;
+    border-radius: 4px; padding: 4px 6px; font: inherit;
+  }
+  button {
+    font: inherit; padding: 5px 12px; border-radius: 4px; cursor: pointer;
+    background: #2a2419; color: #e8e2d6; border: 1px solid #4a4234;
+  }
+  button:hover:not(:disabled) { background: #38301f; }
+  button:disabled { opacity: .4; cursor: default; }
+  button.primary { background: #7d5a1c; border-color: #a3792e; }
+  button.primary:hover:not(:disabled) { background: #96702a; }
+  button.armed { background: #1c4a7d; border-color: #2e6aa3; }
+  button.danger:hover:not(:disabled) { background: #5a1f1f; border-color: #8a3030; }
+
+  #box-list { flex: 1; overflow-y: auto; padding: 6px 0; }
+  .box-row {
+    padding: 8px 16px; cursor: pointer; border-left: 3px solid transparent;
+  }
+  .box-row:hover { background: #26211a; }
+  .box-row.selected { background: #2b2517; border-left-color: #f0a340; }
+  .box-row .name { font-weight: 700; font-size: 12px; }
+  .box-row .coords { color: #9a917f; font-size: 11px; white-space: pre; }
+  #empty-note { padding: 14px 16px; color: #9a917f; font-size: 12px; }
+
+  footer { padding: 12px 16px; border-top: 1px solid #3a332a; display: flex; gap: 8px; align-items: center; }
+  #status { font-size: 11px; color: #9a917f; flex: 1; min-width: 0; }
+  #status.err { color: #e07a6a; }
+  #status.ok { color: #8fc98a; }
+  #dirty-dot { display: none; width: 8px; height: 8px; border-radius: 50%; background: #f0a340; }
+  #dirty-dot.on { display: inline-block; }
+
+  #map { position: fixed; inset: 0 0 0 320px; }
+  .maplibregl-map { background: #e9e2d4; font: inherit; }
+  </style>
+</head>
+<body>
+
+<div id="panel">
+  <header>
+    <h1>Processing Box Editor</h1>
+    <div class="sub">draws the <code>boxes</code> array of boxes.json</div>
+  </header>
+  <div class="controls">
+    <label for="date">overlay date</label>
+    <input type="date" id="date" />
+  </div>
+  <div class="controls">
+    <button id="new-box">＋ New box</button>
+    <button id="delete-box" class="danger" disabled>Delete</button>
+    <button id="save" class="primary">Save</button>
+    <span id="dirty-dot" title="unsaved changes"></span>
+  </div>
+  <div id="box-list"></div>
+  <footer>
+    <div id="status">loading…</div>
+  </footer>
+</div>
+<div id="map"></div>
+
+<script>
+(async () => {
+  const $ = (id) => document.getElementById(id);
+  const statusEl = $('status');
+  function setStatus(msg, cls) { statusEl.textContent = msg; statusEl.className = cls || ''; }
+
+  // ─── Visibility tileset (optional: the editor works with no tiles) ────────
+  let tj = null, layout = null;
+  try {
+    const r = await fetch('tiles/tilejson.json');
+    if (r.ok) {
+      tj = await r.json();
+      assertSupportedFormatVersion(tj.format_version);
+      layout = BitLayout.fromConfig(
+        tj.azimuth_min_deg, tj.azimuth_max_deg, tj.azimuth_step_deg,
+      );
+    }
+  } catch (e) { tj = null; }
+
+  // Local "today" as YYYY-MM-DD (never toISOString: UTC skew — see index.html).
+  function dateToValue(d) {
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  }
+  const dateInput = $('date');
+  dateInput.value = dateToValue(new Date());
+
+  function bitIndexForDate(dateValue, lat) {
+    if (!layout) return null;
+    const [y, m, d] = dateValue.split('-').map(Number);
+    return layout.azimuthToBitIndex(sunsetAzimuth(y, m, d, lat));
+  }
+
+  const INITIAL_CENTER = [-122.5, 37.85];
+  let currentBitIndex = bitIndexForDate(dateInput.value, INITIAL_CENTER[1]);
+
+  // ─── Visibility protocol (ported from index.html, minus the info panel) ───
+  const EMPTY_TILE = (() => {
+    const b64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=';
+    const bin = atob(b64);
+    const arr = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+    return arr.buffer;
+  })();
+  const rawCache = new Map();
+
+  async function decompressGzip(buffer) {
+    const ds = new DecompressionStream('gzip');
+    const stream = new ReadableStream({
+      start(c) { c.enqueue(new Uint8Array(buffer)); c.close(); },
+    }).pipeThrough(ds);
+    return new Uint8Array(await new Response(stream).arrayBuffer());
+  }
+
+  // Client-side overzoom: the .bin pyramid stops at tj.maxzoom (14), and
+  // letting MapLibre stretch those tiles blurs the bitmask cells and leaves
+  // ~1px seams at stretched-tile boundaries. Instead the source advertises
+  // maxzoom+OVERZOOM and this protocol synthesizes the deeper tiles itself:
+  // fetch the tj.maxzoom ancestor and nearest-upsample the right quadrant
+  // while colorizing, so every rendered tile is "native" and stays crisp.
+  const OVERZOOM = 4;
+  if (tj) {
+    maplibregl.addProtocol('visibility', async (params) => {
+      const tileUrl = params.url.replace('visibility://', '').split('?')[0];
+      const [, zs, xs, ys] = tileUrl.match(/tiles\/(\d+)\/(\d+)\/(\d+)\.bin$/);
+      const z = +zs, x = +xs, y = +ys;
+      const d = Math.max(0, z - tj.maxzoom);          // overzoom depth (0 = native)
+      const fetchUrl = `tiles/${z - d}/${x >> d}/${y >> d}.bin`;
+
+      // rawCache holds PROMISES so the 2^d × 2^d sibling tiles synthesized
+      // concurrently from one ancestor share a single fetch + gunzip instead
+      // of racing past a not-yet-populated cache (observed: 7× duplicate
+      // fetches of the same .bin).
+      let entry = rawCache.get(fetchUrl);
+      if (!entry) {
+        entry = (async () => {
+          const r = await fetch(fetchUrl, { cache: 'no-cache' });
+          if (!r.ok) return null;
+          const raw = await decompressGzip(await r.arrayBuffer());
+          return { tileSize: tj.tile_size, bytesPerPixel: tj.bytes_per_pixel, raw };
+        })();
+        rawCache.set(fetchUrl, entry);
+      }
+      const cached = await entry;
+      if (!cached) return { data: EMPTY_TILE };
+      const { tileSize, bytesPerPixel, raw } = cached;
+
+      // This tile covers a (tileSize >> d)² window of the ancestor, offset by
+      // its position among the ancestor's 2^d × 2^d descendants. Colorize
+      // each SOURCE pixel once and splat it as a scale×scale block (at d=2
+      // that is 16× fewer colorize calls than a per-output-pixel loop).
+      const scale = 1 << d;
+      const win = tileSize >> d;
+      const ox = (x - ((x >> d) << d)) * win;
+      const oy = (y - ((y >> d) << d)) * win;
+      const out = new Uint8ClampedArray(tileSize * tileSize * 4);
+      const row = new Uint8ClampedArray(tileSize * 4);
+      for (let sy = 0; sy < win; sy++) {
+        const srcRow = (oy + sy) * tileSize;
+        for (let sx = 0; sx < win; sx++) {
+          const s = srcRow + ox + sx;
+          const pixel = raw.subarray(s * bytesPerPixel, (s + 1) * bytesPerPixel);
+          const [cr, cg, cb, ca] = colorizeBitmaskPixel(pixel, layout.flagBitIndex, currentBitIndex);
+          for (let k = 0; k < scale; k++) {
+            const j = (sx * scale + k) * 4;
+            row[j] = cr; row[j + 1] = cg; row[j + 2] = cb; row[j + 3] = ca;
+          }
+        }
+        for (let k = 0; k < scale; k++) out.set(row, (sy * scale + k) * tileSize * 4);
+      }
+      const canvas = new OffscreenCanvas(tileSize, tileSize);
+      canvas.getContext('2d').putImageData(new ImageData(out, tileSize, tileSize), 0, 0);
+      const blob = await canvas.convertToBlob();
+      return { data: await blob.arrayBuffer() };
+    });
+  }
+
+  // ─── Basemap (self-hosted PMTiles; stock Protomaps light theme) ───────────
+  const pmtilesProtocol = new pmtiles.Protocol();
+  maplibregl.addProtocol('pmtiles', pmtilesProtocol.tile);
+  const BASEMAP_URL = new URL('basemap/basemap.pmtiles', location.href).href;
+  const BASE_URL = location.origin + location.pathname.replace(/[^/]*$/, '');
+  const themeLayers = window.PROTOMAPS_THEME_LAYERS;
+
+  const sources = {
+    basemap: {
+      type: 'vector',
+      url: 'pmtiles://' + BASEMAP_URL,
+      attribution: '© <a href="https://openstreetmap.org/copyright">OpenStreetMap</a> · <a href="https://protomaps.com">Protomaps</a>',
+    },
+  };
+  const visibilityLayer = tj ? {
+    id: 'visibility', type: 'raster', source: 'visibility',
+    paint: { 'raster-opacity': 0.4, 'raster-resampling': 'nearest' },
+  } : null;
+  if (tj) {
+    sources.visibility = {
+      type: 'raster',
+      tiles: ['visibility://tiles/{z}/{x}/{y}.bin'],
+      tileSize: tj.tile_size, minzoom: tj.minzoom,
+      // Deeper than the real pyramid: the protocol synthesizes z>tj.maxzoom
+      // tiles by nearest-upsampling the ancestor (see OVERZOOM above).
+      maxzoom: tj.maxzoom + OVERZOOM,
+      bounds: tj.bounds, attribution: 'Sunset Visibility, USGS DEM',
+    };
+  }
+  const firstSymbolIdx = themeLayers.findIndex((l) => l.type === 'symbol');
+  const layers = visibilityLayer
+    ? [...themeLayers.slice(0, firstSymbolIdx), visibilityLayer, ...themeLayers.slice(firstSymbolIdx)]
+    : [...themeLayers];
+
+  const map = new maplibregl.Map({
+    container: 'map',
+    style: {
+      version: 8,
+      glyphs: BASE_URL + 'basemap/fonts/{fontstack}/{range}.pbf',
+      sprite: BASE_URL + 'basemap/sprites/light',
+      sources,
+      layers,
+    },
+    center: INITIAL_CENTER,
+    zoom: 8,
+    attributionControl: { compact: true },
+  });
+  const canvas = map.getCanvas();
+  window._map = map;   // debug handle (dev tool page): drive the view from the console
+
+  // Recolorization: date or map-center latitude changed → new bit index.
+  let recolorVersion = 0;
+  function recolorizeFromInputs() {
+    if (!tj) return;
+    const bitIndex = bitIndexForDate(dateInput.value, map.getCenter().lat);
+    if (bitIndex === currentBitIndex) return;
+    currentBitIndex = bitIndex;
+    const source = map.getSource('visibility');
+    if (!source) return;
+    recolorVersion++;
+    source.setTiles([`visibility://tiles/{z}/{x}/{y}.bin?v=${recolorVersion}`]);
+  }
+  dateInput.addEventListener('change', recolorizeFromInputs);
+  map.on('moveend', recolorizeFromInputs);
+
+  // ═══ Box state ════════════════════════════════════════════════════════════
+  // Each box is normalized: n > s (lat), w < e (lon). Manifest order = engine
+  // run order = box_NNN naming, so the list index IS the box's name.
+  let boxes = [];          // [{n, w, s, e}]
+  let selected = -1;       // index into boxes, or -1
+  let dirty = false;
+
+  const round6 = (v) => Math.round(v * 1e6) / 1e6;
+  function normBox(a, b) {   // a, b: {lat, lng} corners in any orientation
+    return {
+      n: round6(Math.max(a.lat, b.lat)), s: round6(Math.min(a.lat, b.lat)),
+      w: round6(Math.min(a.lng, b.lng)), e: round6(Math.max(a.lng, b.lng)),
+    };
+  }
+  const boxName = (i) => `box_${String(i).padStart(3, '0')}`;
+
+  function setDirty(v) {
+    dirty = v;
+    $('dirty-dot').className = v ? 'on' : '';
+  }
+  window.addEventListener('beforeunload', (e) => { if (dirty) e.preventDefault(); });
+
+  // ─── GeoJSON render ────────────────────────────────────────────────────────
+  function boxFeature(b, i) {
+    return {
+      type: 'Feature',
+      properties: { idx: i, name: boxName(i), selected: i === selected ? 1 : 0 },
+      geometry: {
+        type: 'Polygon',
+        coordinates: [[[b.w, b.n], [b.e, b.n], [b.e, b.s], [b.w, b.s], [b.w, b.n]]],
+      },
+    };
+  }
+  function handleFeatures() {
+    if (selected < 0) return [];
+    const b = boxes[selected];
+    return [
+      { corner: 'nw', lng: b.w, lat: b.n }, { corner: 'ne', lng: b.e, lat: b.n },
+      { corner: 'se', lng: b.e, lat: b.s }, { corner: 'sw', lng: b.w, lat: b.s },
+    ].map((h) => ({
+      type: 'Feature', properties: { corner: h.corner },
+      geometry: { type: 'Point', coordinates: [h.lng, h.lat] },
+    }));
+  }
+  function render() {
+    const bs = map.getSource('boxes');
+    if (bs) bs.setData({ type: 'FeatureCollection', features: boxes.map(boxFeature) });
+    const hs = map.getSource('handles');
+    if (hs) hs.setData({ type: 'FeatureCollection', features: handleFeatures() });
+    renderList();
+  }
+
+  function renderList() {
+    const list = $('box-list');
+    list.innerHTML = '';
+    if (!boxes.length) {
+      const note = document.createElement('div');
+      note.id = 'empty-note';
+      note.textContent = 'No boxes. “New box”, then drag a rectangle on the map. The western edge must be offshore (the engine rejects it otherwise).';
+      list.appendChild(note);
+    }
+    boxes.forEach((b, i) => {
+      const row = document.createElement('div');
+      row.className = 'box-row' + (i === selected ? ' selected' : '');
+      row.innerHTML = `<div class="name"></div><div class="coords"></div>`;
+      row.querySelector('.name').textContent = boxName(i);
+      row.querySelector('.coords').textContent =
+        `NW ${b.n.toFixed(4)}, ${b.w.toFixed(4)}\nSE ${b.s.toFixed(4)}, ${b.e.toFixed(4)}`;
+      row.addEventListener('click', () => select(i));
+      list.appendChild(row);
+    });
+    $('delete-box').disabled = selected < 0;
+  }
+
+  function select(i) {
+    selected = i;
+    render();
+  }
+
+  // ─── Load current manifest ────────────────────────────────────────────────
+  try {
+    const r = await fetch('/boxes.json', { cache: 'no-store' });
+    if (r.ok) {
+      const doc = await r.json();
+      boxes = (doc.boxes || []).map((e) => normBox(
+        { lat: e.top_left[0], lng: e.top_left[1] },
+        { lat: e.bottom_right[0], lng: e.bottom_right[1] },
+      ));
+      setStatus(`loaded ${boxes.length} box${boxes.length === 1 ? '' : 'es'} from boxes.json`);
+      render();   // the map may already have fired 'load'; render() no-ops on
+                  // sources that don't exist yet, so this is safe either way
+    } else if (r.status === 404) {
+      setStatus('boxes.json does not exist yet — Save will create it');
+    } else {
+      setStatus(`load failed: HTTP ${r.status}`, 'err');
+    }
+  } catch (e) {
+    setStatus(`load failed: ${e.message}`, 'err');
+  }
+  if (!tj) setStatus(statusEl.textContent + ' · no visibility tiles found');
+
+  // ─── Map layers + interaction ─────────────────────────────────────────────
+  map.on('load', () => {
+    map.resize();   // re-measure: the container may not have had its final
+                    // size at construction time (same quirk as index.html)
+    map.addSource('boxes', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
+    map.addSource('handles', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
+    map.addLayer({
+      id: 'boxes-fill', type: 'fill', source: 'boxes',
+      paint: {
+        'fill-color': ['case', ['==', ['get', 'selected'], 1], '#f0a340', '#3d7dd6'],
+        'fill-opacity': 0.08,
+      },
+    });
+    map.addLayer({
+      id: 'boxes-line', type: 'line', source: 'boxes',
+      paint: {
+        'line-color': ['case', ['==', ['get', 'selected'], 1], '#f0a340', '#3d7dd6'],
+        'line-width': ['case', ['==', ['get', 'selected'], 1], 2.5, 1.5],
+      },
+    });
+    map.addLayer({
+      id: 'boxes-label', type: 'symbol', source: 'boxes',
+      layout: {
+        'text-field': ['get', 'name'],
+        'text-font': ['Noto Sans Medium'],
+        'text-size': 12,
+        'symbol-placement': 'point',
+      },
+      paint: { 'text-color': '#1a3a6b', 'text-halo-color': '#ffffff', 'text-halo-width': 1.5 },
+    });
+    map.addLayer({
+      id: 'box-handles', type: 'circle', source: 'handles',
+      paint: {
+        'circle-radius': 6, 'circle-color': '#ffffff',
+        'circle-stroke-color': '#f0a340', 'circle-stroke-width': 2.5,
+      },
+    });
+    render();
+  });
+  setTimeout(() => map.resize(), 200); // fallback for late layout/font settling
+
+  // One drag gesture at a time: null | {kind:'draw'|'corner'|'move', ...}
+  let drag = null;
+  let drawArmed = false;
+
+  function setArmed(v) {
+    drawArmed = v;
+    $('new-box').className = v ? 'armed' : '';
+    $('new-box').textContent = v ? 'drag on map…' : '＋ New box';
+    canvas.style.cursor = v ? 'crosshair' : '';
+  }
+  $('new-box').addEventListener('click', () => setArmed(!drawArmed));
+
+  function hit(point, layerId) {
+    if (!map.getLayer(layerId)) return [];
+    const r = 5;
+    return map.queryRenderedFeatures(
+      [[point.x - r, point.y - r], [point.x + r, point.y + r]], { layers: [layerId] });
+  }
+  const boxArea = (b) => (b.n - b.s) * (b.e - b.w);
+
+  map.on('mousedown', (ev) => {
+    if (drag) return;
+
+    if (drawArmed) {                                   // rubber-band a new box
+      drag = { kind: 'draw', anchor: ev.lngLat, moved: false };
+      map.dragPan.disable();
+      ev.preventDefault();
+      return;
+    }
+
+    const h = hit(ev.point, 'box-handles');
+    if (h.length && selected >= 0) {                   // drag a corner handle
+      const b = boxes[selected];
+      const opposite = {                               // the corner that stays put
+        nw: { lat: b.s, lng: b.e }, ne: { lat: b.s, lng: b.w },
+        se: { lat: b.n, lng: b.w }, sw: { lat: b.n, lng: b.e },
+      }[h[0].properties.corner];
+      drag = { kind: 'corner', fixed: opposite };
+      map.dragPan.disable();
+      ev.preventDefault();
+      return;
+    }
+
+    const f = hit(ev.point, 'boxes-fill');
+    if (f.length && f.some((x) => x.properties.idx === selected)) {
+      const b = boxes[selected];                       // drag the selected box's body
+      drag = {
+        kind: 'move', start: ev.lngLat, orig: { ...b }, moved: false,
+      };
+      map.dragPan.disable();
+      ev.preventDefault();
+    }
+    // otherwise: plain map pan; selection changes happen on 'click'
+  });
+
+  map.on('mousemove', (ev) => {
+    if (!drag) {
+      // hover cursor: handles beat fills
+      if (drawArmed) return;
+      canvas.style.cursor = hit(ev.point, 'box-handles').length ? 'nwse-resize'
+        : hit(ev.point, 'boxes-fill').length ? 'pointer' : '';
+      return;
+    }
+    if (drag.kind === 'draw') {
+      drag.moved = true;
+      drag.preview = normBox(drag.anchor, ev.lngLat);
+      const bs = map.getSource('boxes');
+      if (bs) bs.setData({
+        type: 'FeatureCollection',
+        features: [...boxes.map(boxFeature), {
+          ...boxFeature(drag.preview, boxes.length), properties: { idx: -1, name: '', selected: 1 },
+        }],
+      });
+    } else if (drag.kind === 'corner') {
+      boxes[selected] = normBox(drag.fixed, ev.lngLat);
+      setDirty(true);
+      render();
+    } else if (drag.kind === 'move') {
+      drag.moved = true;
+      const dLat = ev.lngLat.lat - drag.start.lat;
+      const dLng = ev.lngLat.lng - drag.start.lng;
+      const o = drag.orig;
+      boxes[selected] = {
+        n: round6(o.n + dLat), s: round6(o.s + dLat),
+        w: round6(o.w + dLng), e: round6(o.e + dLng),
+      };
+      setDirty(true);
+      render();
+    }
+  });
+
+  map.on('mouseup', (ev) => {
+    if (!drag) return;
+    const d = drag;
+    drag = null;
+    map.dragPan.enable();
+
+    if (d.kind === 'draw') {
+      setArmed(false);
+      const b = d.moved ? normBox(d.anchor, ev.lngLat) : null;
+      // A click (or a sliver) is not a box — require a real rectangle.
+      if (b && b.n - b.s > 1e-4 && b.e - b.w > 1e-4) {
+        boxes.push(b);
+        selected = boxes.length - 1;
+        setDirty(true);
+      }
+      render();
+    }
+    // corner/move already applied incrementally
+  });
+
+  map.on('click', (ev) => {
+    if (drawArmed) return;                    // draw gesture handles its own clicks
+    const f = hit(ev.point, 'boxes-fill');
+    if (!f.length) { select(-1); return; }    // empty map → deselect
+    // Smallest box wins, so an inner box stays selectable under a bigger one.
+    const best = f.reduce((a, x) =>
+      boxArea(boxes[x.properties.idx]) < boxArea(boxes[a.properties.idx]) ? x : a);
+    if (best.properties.idx !== selected) select(best.properties.idx);
+  });
+
+  // ─── Delete ────────────────────────────────────────────────────────────────
+  function deleteSelected() {
+    if (selected < 0) return;
+    boxes.splice(selected, 1);
+    selected = -1;
+    setDirty(true);
+    render();
+  }
+  $('delete-box').addEventListener('click', deleteSelected);
+  document.addEventListener('keydown', (ev) => {
+    if (ev.target.tagName === 'INPUT') return;
+    if (ev.key === 'Delete' || ev.key === 'Backspace') { ev.preventDefault(); deleteSelected(); }
+    if (ev.key === 'Escape') { setArmed(false); select(-1); }
+  });
+
+  // ─── Save ─────────────────────────────────────────────────────────────────
+  $('save').addEventListener('click', async () => {
+    setStatus('saving…');
+    try {
+      const r = await fetch('/boxes.json', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          boxes: boxes.map((b) => ({ top_left: [b.n, b.w], bottom_right: [b.s, b.e] })),
+        }),
+      });
+      const res = await r.json();
+      if (!r.ok) throw new Error(res.error || `HTTP ${r.status}`);
+      setDirty(false);
+      setStatus(`saved ${res.boxes} box${res.boxes === 1 ? '' : 'es'} to boxes.json`, 'ok');
+    } catch (e) {
+      setStatus(`save failed: ${e.message}`, 'err');
+    }
+  });
+})();
+</script>
+</body>
+</html>
