@@ -148,9 +148,10 @@ def _merge_window(
     dist = np.minimum(dist_ns[:, None], dist_e[None, :])
 
     best_sub = best[dst_row0 : dst_row0 + rh, dst_col0 : dst_col0 + src_width]
+    merged_sub = merged[dst_row0 : dst_row0 + rh, dst_col0 : dst_col0 + src_width]
     wins = dist > best_sub  # strict: an exact tie keeps the earlier source
-    best_sub[wins] = dist[wins]
-    merged[dst_row0 : dst_row0 + rh, dst_col0 : dst_col0 + src_width][wins] = data[wins]
+    np.copyto(best_sub, dist, where=wins)
+    np.copyto(merged_sub, data, where=wins[:, :, None])
 
 
 def merge_deepest_interior(
@@ -412,6 +413,7 @@ def iter_base_tile_rows(
                 dst_nodata=None,
                 resampling=Resampling.nearest,
                 num_threads=num_threads,
+                warp_mem_limit=512,  # MB; big chunks so the warp threads scale
             )
 
         yield ty, strip
