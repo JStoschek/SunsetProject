@@ -22,6 +22,7 @@
   <script src="sunset_azimuth.js"></script>
   <script src="bit_layout.js"></script>
   <script src="colorizer.js"></script>
+  <script src="fill_mask.js"></script>
   <script src="format_guard.js"></script>
 
   <style>
@@ -282,13 +283,31 @@
     // same water-polygons dataset the engine's ocean mask uses. That gives the
     // fill the exact semantics of a tile pixel: everything in the US that is
     // not ocean water is land, so lakes, rivers, and Delta channels outside
-    // the boxes read "non-visible" just as they would inside. Optional: a
-    // missing/bad file drops the fill and the outside-box verdict; the
-    // computed map still works.
+    // the boxes read "non-visible" just as they would inside.
+    //
+    // It is NOT drawn as a vector layer. It is rasterized onto each Visibility
+    // Tile's own pixel grid (fill_mask.js) so uncovered US land is painted by
+    // the same raster as the computed tiles: a separate translucent fill layer
+    // can never butt-join the tile edge exactly — the OR-downsampled pyramid
+    // dilates coverage by up to a pixel per zoom, and any overlap (or gap)
+    // between two layers renders as a dark (or light) line tracing every box.
+    // In one raster, overlap is just black. Optional: a missing/bad file drops
+    // the mask and the outside-box verdict; the computed map still works.
     const fillGeo = await fetch('us_land_fill.geojson')
       .then((r) => (r.ok ? r.json() : null))
       .catch(() => null);
     const fillPolys = fillGeo?.features?.[0]?.geometry?.coordinates ?? null;
+    const fillMasker = fillPolys ? createFillMasker(fillPolys) : null;
+    // Geometry masks per tile URL — independent of the recolor version.
+    const maskCache = new Map();
+    function maskForTileUrl(tileUrl) {
+      if (!fillMasker) return null;
+      if (maskCache.has(tileUrl)) return maskCache.get(tileUrl);
+      const m = tileUrl.match(/tiles\/(\d+)\/(\d+)\/(\d+)\.bin$/);
+      const mask = m ? fillMasker(+m[1], +m[2], +m[3], tj.tile_size) : null;
+      maskCache.set(tileUrl, mask);
+      return mask;
+    }
 
     // Ray-cast point-in-polygon over the fill MultiPolygon (outer ring minus
     // holes). lng=x, lat=y.
@@ -357,42 +376,54 @@
       return new Uint8Array(await new Response(stream).arrayBuffer());
     }
 
-    // Colorize all pixels of a cached raw tile for the current bit index.
-    // The tiles carry the precise coast (the engine's OSM ocean mask): water is
-    // transparent, land is white (visible) or black (blocked). The inland black
-    // fill deliberately stops short of the coast, so blocked coastal land here
-    // is what makes the overlay run right up to the water.
-    function applyBitmask(raw, tileSize, bytesPerPixel, bitIndex) {
+    // Colorize a tile for the current bit index. Computed pixels (flag set)
+    // keep the tiles' precise verdicts and coast (the engine's OSM ocean
+    // mask): water transparent, land white (visible) or black (blocked).
+    // Transparent pixels fall through to the geometry mask, which paints
+    // uncovered US land black in the SAME raster — inside the boxes the mask
+    // is a hole, so tile data stays authoritative there. Either input may be
+    // null (a synthesized tile has no raw bytes; abroad/ocean has no mask).
+    function applyBitmask(raw, mask, tileSize, bytesPerPixel, bitIndex) {
       const out = new Uint8ClampedArray(tileSize * tileSize * 4);
       const { flagBitIndex } = layout;
       for (let i = 0; i < tileSize * tileSize; i++) {
-        const pixel = raw.subarray(i * bytesPerPixel, (i + 1) * bytesPerPixel);
-        const [r, g, b, a] = colorizeBitmaskPixel(pixel, flagBitIndex, bitIndex);
         const j = i * 4;
-        out[j] = r; out[j + 1] = g; out[j + 2] = b; out[j + 3] = a;
+        if (raw) {
+          const pixel = raw.subarray(i * bytesPerPixel, (i + 1) * bytesPerPixel);
+          const [r, g, b, a] = colorizeBitmaskPixel(pixel, flagBitIndex, bitIndex);
+          if (a !== 0) {
+            out[j] = r; out[j + 1] = g; out[j + 2] = b; out[j + 3] = a;
+            continue;
+          }
+        }
+        if (mask && mask[i]) out[j + 3] = 255; // uncovered US land → black
       }
       return out;
     }
 
     // Custom protocol: fetch raw .bin Visibility Tiles (gzip-compressed),
-    // cache decompressed bytes, then colorize per the current bit index.
+    // cache decompressed bytes, then colorize per the current bit index. A
+    // tile absent from the pyramid is synthesized from the geometry mask, so
+    // the one raster paints uncovered US land black everywhere — no second
+    // layer, no seam at box or coverage edges.
     maplibregl.addProtocol('visibility', async (params) => {
       const tileUrl = params.url.replace('visibility://', '').split('?')[0];
 
       let cached = rawCache.get(tileUrl);
       if (!cached) {
         const r = await fetch(tileUrl, { cache: 'no-cache' });
-        if (!r.ok) return { data: EMPTY_TILE };
+        const raw = r.ok ? await decompressGzip(await r.arrayBuffer()) : null;
+        const mask = maskForTileUrl(tileUrl);
+        if (!raw && !mask) return { data: EMPTY_TILE }; // abroad / open ocean
 
-        const raw = await decompressGzip(await r.arrayBuffer());
-        cached = { tileSize: tj.tile_size, bytesPerPixel: tj.bytes_per_pixel, raw };
+        cached = { tileSize: tj.tile_size, bytesPerPixel: tj.bytes_per_pixel, raw, mask };
         rawCache.set(tileUrl, cached);
         // A freshly-loaded tile may now cover the open Observer — refresh verdict.
         if (infoOpen) renderPanel();
       }
 
-      const { tileSize, bytesPerPixel, raw } = cached;
-      const rgba = applyBitmask(raw, tileSize, bytesPerPixel, currentBitIndex);
+      const { tileSize, bytesPerPixel, raw, mask } = cached;
+      const rgba = applyBitmask(raw, mask, tileSize, bytesPerPixel, currentBitIndex);
       const canvas = new OffscreenCanvas(tileSize, tileSize);
       const ctx = canvas.getContext('2d');
       ctx.putImageData(new ImageData(rgba, tileSize, tileSize), 0, 0);
@@ -406,6 +437,22 @@
     const pmtilesProtocol = new pmtiles.Protocol();
     maplibregl.addProtocol('pmtiles', pmtilesProtocol.tile);
     const BASEMAP_URL = new URL('basemap/basemap.pmtiles', location.href).href;
+
+    // Register the archive with the protocol so its single HTTP-range reader is
+    // reused, then read the basemap's coverage rectangle straight from the
+    // PMTiles header. The map is clamped to this rectangle (maxBounds, below) so
+    // the user can never pan or zoom to reveal an area the basemap doesn't tile
+    // — no bare background outside coverage. Reading it from the archive keeps
+    // the clamp in sync automatically when the basemap is re-extracted to a
+    // wider bbox (the basemap is the outermost tile layer: the visibility
+    // overlay only ever covers a sub-region of it).
+    const basemapArchive = new pmtiles.PMTiles(BASEMAP_URL);
+    pmtilesProtocol.add(basemapArchive);
+    const bmHeader = await basemapArchive.getHeader();
+    const basemapBounds = [
+      [bmHeader.minLon, bmHeader.minLat],
+      [bmHeader.maxLon, bmHeader.maxLat],
+    ];
 
     // The Protomaps "light" theme layers are authored against a source named
     // "basemap"; keep the key in sync. Drop the visibility overlay in just
@@ -504,35 +551,20 @@
       if (o.filter) layer.filter = o.filter;
     }
     const firstSymbolIdx = themeLayers.findIndex((l) => l.type === 'symbol');
-    // The "non-visible" base: US-outside-the-boxes painted black at the same
-    // opacity as a blocked tile pixel, so uncovered US reads exactly like
-    // computed-blocked land with no seam. Ocean water is cut out of the
-    // polygon itself (same OSM dataset as the engine's ocean mask), so it
-    // shows the basemap just like tile-transparent ocean does. The fill sits
-    // in the same slot as the raster — below labels, above everything else —
-    // so inside- and outside-box rendering dim the basemap identically.
-    const usFillLayer = {
-      id: 'us-nonvisible',
-      type: 'fill',
-      source: 'us_land',
-      paint: { 'fill-color': '#000000', 'fill-opacity': 0.4 },
-    };
+    // The single overlay: computed verdicts AND the uncovered-US black are
+    // both painted by this raster (see applyBitmask / the protocol), just
+    // below the first label layer so place names stay legible on top.
     const visibilityLayer = {
       id: 'visibility',
       type: 'raster',
       source: 'visibility',
-      // 0.4 matches the fill so blocked land reads identically whether it came
-      // from a tile or the inland fill. 'nearest' keeps the visibility cells
-      // crisp (the data is a per-cell bitmask; interpolation would imply
-      // resolution it doesn't have).
+      // 'nearest' keeps the visibility cells crisp (the data is a per-cell
+      // bitmask; interpolation would imply resolution it doesn't have).
       paint: { 'raster-opacity': 0.4, 'raster-resampling': 'nearest' },
     };
-    // usFillLayer only when the fill polygon loaded; both overlay layers drop in
-    // just below the first label layer, in this order (fill under raster).
-    const overlayLayers = fillGeo ? [usFillLayer, visibilityLayer] : [visibilityLayer];
     const layers = firstSymbolIdx === -1
-      ? [...themeLayers, ...overlayLayers]
-      : [...themeLayers.slice(0, firstSymbolIdx), ...overlayLayers, ...themeLayers.slice(firstSymbolIdx)];
+      ? [...themeLayers, visibilityLayer]
+      : [...themeLayers.slice(0, firstSymbolIdx), visibilityLayer, ...themeLayers.slice(firstSymbolIdx)];
 
     // Directory of the current page (no query/hash). Used to build absolute
     // asset URLs; note the glyphs template must keep its literal {fontstack}
@@ -558,15 +590,27 @@
             tileSize: tj.tile_size,
             minzoom: tj.minzoom,
             maxzoom: tj.maxzoom,
-            bounds: tj.bounds,
+            // Deliberately unbounded: outside the pyramid the protocol
+            // synthesizes tiles from the geometry mask, so uncovered US land
+            // is black with no seam at the coverage rectangle's edge.
             attribution: 'Sunset Visibility, USGS DEM',
           },
-          ...(fillGeo ? { us_land: { type: 'geojson', data: fillGeo } } : {}),
         },
         layers,
       },
       center: INITIAL_CENTER,
       zoom: 11,
+      // Floor only: below the pyramid's minzoom the overlay vanishes and the
+      // basemap falls apart. Zooming IN past maxzoom is fine — the raster
+      // overzooms its deepest tiles (crisp nearest-neighbour cells) and the
+      // vector basemap overzooms natively, so no ceiling is set.
+      minZoom: tj.minzoom,
+      // Clamp panning AND zoom-out to the basemap's coverage rectangle so no
+      // untiled background is ever reachable. MapLibre also derives an implicit
+      // minimum zoom from these bounds and the viewport size (you can't zoom out
+      // past the point where the rectangle fills the window), which is the
+      // binding constraint above the tj.minzoom floor.
+      maxBounds: basemapBounds,
       attributionControl: { compact: true },   // collapse to the (i) button by default
     });
 
@@ -607,7 +651,7 @@
         const gy = latToTileY(lat, z);
         const x = Math.floor(gx), y = Math.floor(gy);
         const tile = rawCache.get(`tiles/${z}/${x}/${y}.bin`);
-        if (!tile) continue;
+        if (!tile || !tile.raw) continue; // synthesized tiles carry no data
         const { tileSize, bytesPerPixel, raw } = tile;
         const px = Math.min(tileSize - 1, Math.floor((gx - x) * tileSize));
         const py = Math.min(tileSize - 1, Math.floor((gy - y) * tileSize));
