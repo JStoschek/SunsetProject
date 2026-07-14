@@ -373,6 +373,95 @@ def test_disjoint_boxes_leave_transparent_gap(tmp_path: Path) -> None:
     assert _read_pixel(out_dir, ZOOM, 0.5, -5.0) == _transparent_pixel()
 
 
+# ---------------------------------------------------------------------------
+# US-boundary clip: pixels outside the polygon are zeroed to transparent.
+# ---------------------------------------------------------------------------
+
+
+def _write_clip_polygon(
+    path: Path, west: float, south: float, east: float, north: float
+) -> None:
+    """A FeatureCollection with one axis-aligned rectangular US-land stand-in."""
+    ring = [[west, south], [east, south], [east, north], [west, north], [west, south]]
+    path.write_text(
+        json.dumps(
+            {
+                "type": "FeatureCollection",
+                "features": [
+                    {
+                        "type": "Feature",
+                        "properties": {},
+                        "geometry": {"type": "Polygon", "coordinates": [ring]},
+                    }
+                ],
+            }
+        )
+    )
+
+
+def test_us_boundary_keeps_land_inside_and_clips_land_outside(tmp_path: Path) -> None:
+    """The clip zeros a covered land pixel outside the polygon, keeps one inside.
+
+    The fixture's land sits at lon 0.5, lat 3.5.  A polygon over only the
+    eastern half (lon 2–4) excludes it → the pixel must come out transparent;
+    a polygon over the whole extent keeps its bytes verbatim.
+    """
+    src_tif = tmp_path / "src.tif"
+    _make_fixture(src_tif)  # land at lon 0.5, lat 3.5
+
+    # Polygon covers the whole fixture → land survives untouched.
+    keep_clip = tmp_path / "keep.geojson"
+    _write_clip_polygon(keep_clip, -1.0, -1.0, 5.0, 5.0)
+    keep_dir = tmp_path / "keep_tiles"
+    rc = main(
+        [
+            "--input", str(src_tif),
+            "--output-dir", str(keep_dir),
+            "--us-boundary", str(keep_clip),
+            "--min-zoom", str(ZOOM),
+            "--max-zoom", str(ZOOM),
+        ]
+    )
+    assert rc == 0
+    assert _read_pixel(keep_dir, ZOOM, 0.5, 3.5) == _land_pixel()
+
+    # Polygon covers only the eastern half → the western land pixel is clipped.
+    clip_east = tmp_path / "east.geojson"
+    _write_clip_polygon(clip_east, 2.0, -1.0, 5.0, 5.0)
+    clip_dir = tmp_path / "clip_tiles"
+    rc = main(
+        [
+            "--input", str(src_tif),
+            "--output-dir", str(clip_dir),
+            "--us-boundary", str(clip_east),
+            "--min-zoom", str(ZOOM),
+            "--max-zoom", str(ZOOM),
+        ]
+    )
+    assert rc == 0
+    assert _read_pixel(clip_dir, ZOOM, 0.5, 3.5) == _transparent_pixel()
+
+
+def test_missing_us_boundary_exits_nonzero(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A --us-boundary path that does not exist aborts before encoding."""
+    src_tif = tmp_path / "src.tif"
+    _make_fixture(src_tif)
+
+    rc = main(
+        [
+            "--input", str(src_tif),
+            "--output-dir", str(tmp_path / "tiles"),
+            "--us-boundary", str(tmp_path / "nope.geojson"),
+            "--min-zoom", str(ZOOM),
+            "--max-zoom", str(ZOOM),
+        ]
+    )
+    assert rc != 0
+    assert "us-boundary" in capsys.readouterr().err
+
+
 def test_format_contract_mismatch_exits_nonzero(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

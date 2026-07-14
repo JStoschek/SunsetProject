@@ -2,6 +2,7 @@
   "engine": "build-release/src/compute_azimuth_range/compute_azimuth_range",
   "config": "config/pipeline.conf",
   "output_dir": "build/boxes",
+  "fill_dir": "frontend",
   "boxes": [
     {"top_left": [38.60, -123.60], "bottom_right": [37.90, -122.30]},
     {"top_left": [38.08, -123.20], "bottom_right": [37.30, -121.79]}

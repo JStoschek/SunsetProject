@@ -277,6 +277,44 @@
       tj.azimuth_min_deg, tj.azimuth_max_deg, tj.azimuth_step_deg,
     );
 
+    // The "non-visible" base polygon (scripts/build_us_polygons.py): US land
+    // (Alaska excluded) minus the Processing Boxes minus OSM ocean water — the
+    // same water-polygons dataset the engine's ocean mask uses. That gives the
+    // fill the exact semantics of a tile pixel: everything in the US that is
+    // not ocean water is land, so lakes, rivers, and Delta channels outside
+    // the boxes read "non-visible" just as they would inside. Optional: a
+    // missing/bad file drops the fill and the outside-box verdict; the
+    // computed map still works.
+    const fillGeo = await fetch('us_land_fill.geojson')
+      .then((r) => (r.ok ? r.json() : null))
+      .catch(() => null);
+    const fillPolys = fillGeo?.features?.[0]?.geometry?.coordinates ?? null;
+
+    // Ray-cast point-in-polygon over the fill MultiPolygon (outer ring minus
+    // holes). lng=x, lat=y.
+    function pointInRing(x, y, ring) {
+      let inside = false;
+      for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+        const xi = ring[i][0], yi = ring[i][1];
+        const xj = ring[j][0], yj = ring[j][1];
+        if ((yi > y) !== (yj > y) &&
+            x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) {
+          inside = !inside;
+        }
+      }
+      return inside;
+    }
+    function pointInFill(lng, lat) {
+      if (!fillPolys) return false;
+      for (const poly of fillPolys) {
+        if (pointInRing(lng, lat, poly[0]) &&
+            !poly.slice(1).some((hole) => pointInRing(lng, lat, hole))) {
+          return true;
+        }
+      }
+      return false;
+    }
+
     // Local "today" as YYYY-MM-DD, from local calendar components. Never
     // toISOString(): that yields the UTC date and can be a day ahead for
     // evening West Coast users.
@@ -320,6 +358,10 @@
     }
 
     // Colorize all pixels of a cached raw tile for the current bit index.
+    // The tiles carry the precise coast (the engine's OSM ocean mask): water is
+    // transparent, land is white (visible) or black (blocked). The inland black
+    // fill deliberately stops short of the coast, so blocked coastal land here
+    // is what makes the overlay run right up to the water.
     function applyBitmask(raw, tileSize, bytesPerPixel, bitIndex) {
       const out = new Uint8ClampedArray(tileSize * tileSize * 4);
       const { flagBitIndex } = layout;
@@ -462,17 +504,35 @@
       if (o.filter) layer.filter = o.filter;
     }
     const firstSymbolIdx = themeLayers.findIndex((l) => l.type === 'symbol');
+    // The "non-visible" base: US-outside-the-boxes painted black at the same
+    // opacity as a blocked tile pixel, so uncovered US reads exactly like
+    // computed-blocked land with no seam. Ocean water is cut out of the
+    // polygon itself (same OSM dataset as the engine's ocean mask), so it
+    // shows the basemap just like tile-transparent ocean does. The fill sits
+    // in the same slot as the raster — below labels, above everything else —
+    // so inside- and outside-box rendering dim the basemap identically.
+    const usFillLayer = {
+      id: 'us-nonvisible',
+      type: 'fill',
+      source: 'us_land',
+      paint: { 'fill-color': '#000000', 'fill-opacity': 0.4 },
+    };
     const visibilityLayer = {
       id: 'visibility',
       type: 'raster',
       source: 'visibility',
-      // 'nearest' keeps the visibility cells crisp (the data is a per-cell
-      // bitmask; interpolation would imply resolution it doesn't have).
+      // 0.4 matches the fill so blocked land reads identically whether it came
+      // from a tile or the inland fill. 'nearest' keeps the visibility cells
+      // crisp (the data is a per-cell bitmask; interpolation would imply
+      // resolution it doesn't have).
       paint: { 'raster-opacity': 0.4, 'raster-resampling': 'nearest' },
     };
+    // usFillLayer only when the fill polygon loaded; both overlay layers drop in
+    // just below the first label layer, in this order (fill under raster).
+    const overlayLayers = fillGeo ? [usFillLayer, visibilityLayer] : [visibilityLayer];
     const layers = firstSymbolIdx === -1
-      ? [...themeLayers, visibilityLayer]
-      : [...themeLayers.slice(0, firstSymbolIdx), visibilityLayer, ...themeLayers.slice(firstSymbolIdx)];
+      ? [...themeLayers, ...overlayLayers]
+      : [...themeLayers.slice(0, firstSymbolIdx), ...overlayLayers, ...themeLayers.slice(firstSymbolIdx)];
 
     // Directory of the current page (no query/hash). Used to build absolute
     // asset URLs; note the glyphs template must keep its literal {fontstack}
@@ -501,6 +561,7 @@
             bounds: tj.bounds,
             attribution: 'Sunset Visibility, USGS DEM',
           },
+          ...(fillGeo ? { us_land: { type: 'geojson', data: fillGeo } } : {}),
         },
         layers,
       },
@@ -556,13 +617,19 @@
       return null;
     }
 
-    // 'Visible' / 'Blocked' for a land pixel; null for water / no-data.
+    // 'Visible' / 'Blocked' for a land pixel; null for ocean / outside the US.
     function visibilityVerdict(lat, lng) {
       const pixelBytes = sampleVisibility(lat, lng);
-      if (!pixelBytes) return null;
-      const rgba = colorizeBitmaskPixel(pixelBytes, layout.flagBitIndex, currentBitIndex);
-      if (rgba[3] === 0) return null;
-      return rgba[0] === 255 ? 'Visible' : 'Blocked';
+      if (pixelBytes) {
+        const rgba = colorizeBitmaskPixel(pixelBytes, layout.flagBitIndex, currentBitIndex);
+        if (rgba[3] !== 0) return rgba[0] === 255 ? 'Visible' : 'Blocked';
+      }
+      // No tile here, or a transparent pixel — which is either engine ocean
+      // (inside a box) or the uncovered margin of an edge tile (outside every
+      // box). The fill polygon tells them apart with tile semantics: US land
+      // or inland water is non-visible; ocean water and anywhere outside the
+      // US (the boxes are holes in the fill) get no verdict.
+      return pointInFill(lng, lat) ? 'Blocked' : null;
     }
 
     // ═══ Sun almanac helpers (SunCalc; azimuth from the project module) ═════

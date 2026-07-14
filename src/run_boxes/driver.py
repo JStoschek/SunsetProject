@@ -26,17 +26,51 @@ overridden on the CLI (CLI wins).  A box whose western edge is not offshore
 makes the engine hard-error (ADR-0015); the driver stops on the first such
 failure and names the box, since a mis-anchored box must not silently drop
 out of the coverage.
+
+The frontend's `us_land_fill.geojson` is a **derived artifact of this
+manifest** (it has the boxes cut out of it), so a boxes edit silently breaks
+the map unless the fill is rebuilt.  When the manifest sets `fill_dir` (or
+`--fill-dir` is passed), the driver re-runs
+`scripts/build_us_polygons.py --if-stale` after every successful pass; the
+script's own provenance stamp makes that a no-op when nothing changed, and a
+regeneration failure fails the run loudly instead of leaving a stale fill.
+
+Runs are **incremental** (ADR-0017): after each engine success the driver
+writes a provenance sidecar `box_NNN.tif.json` recording the box's bounds and
+a hash of `pipeline.conf`.  On the next run a box whose tif and matching
+sidecar both exist is skipped — nothing the driver controls changed.  The DEM
+rasters and the engine binary are deliberately *outside* this freshness key;
+after re-acquiring DEM tiles or rebuilding the engine, pass `--force` to
+reprocess every box.  When the manifest shrinks, trailing `box_*` outputs
+beyond the new length are pruned so the merge folder stays honest.
 """
 
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import re
 import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Sequence
+
+# The provenance sidecar schema version (ADR-0017). Bump when its shape
+# changes; an unrecognised version is treated as a miss (reprocess), never an
+# error.
+SIDECAR_VERSION = 1
+
+# box_000.tif / box_012.tif.json → capture the positional index for pruning,
+# tolerant of a change in zero-pad width.
+_BOX_INDEX_RE = re.compile(r"^box_(\d+)\.tif(?:\.json)?$")
+
+# The fill-polygon builder, resolved relative to the repo root so the driver
+# works from any cwd. Overridable via --fill-script (mainly for tests).
+_DEFAULT_FILL_SCRIPT = (
+    Path(__file__).resolve().parents[2] / "scripts" / "build_us_polygons.py"
+)
 
 
 @dataclass(frozen=True)
@@ -63,6 +97,7 @@ class Manifest:
     engine: Path | None
     config: Path | None
     output_dir: Path | None
+    fill_dir: Path | None
     boxes: list[Box]
 
 
@@ -121,8 +156,82 @@ def load_manifest(path: Path) -> Manifest:
         engine=_opt_path("engine"),
         config=_opt_path("config"),
         output_dir=_opt_path("output_dir"),
+        fill_dir=_opt_path("fill_dir"),
         boxes=boxes,
     )
+
+
+def _config_hash(config: Path) -> str:
+    """SHA-256 of the resolved pipeline.conf bytes, the config half of the key."""
+    return "sha256:" + hashlib.sha256(config.read_bytes()).hexdigest()
+
+
+def _sidecar_path(out_path: Path) -> Path:
+    """The provenance record next to a box tif: box_NNN.tif.json (ADR-0017)."""
+    return out_path.with_name(out_path.name + ".json")
+
+
+def _read_sidecar(path: Path) -> dict | None:
+    """Load a provenance sidecar; any unreadable/malformed file is a miss."""
+    try:
+        doc = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+    return doc if isinstance(doc, dict) else None
+
+
+def _is_fresh(box: Box, out_path: Path, config_hash: str) -> bool:
+    """True iff the tif and a matching sidecar both exist for this box.
+
+    Freshness compares *inputs* — the box's four bounds and the config hash —
+    so a box is skipped only when nothing the driver controls has changed.
+    """
+    if not out_path.is_file():
+        return False
+    doc = _read_sidecar(_sidecar_path(out_path))
+    if doc is None or doc.get("version") != SIDECAR_VERSION:
+        return False
+    return (
+        doc.get("north") == box.north
+        and doc.get("west") == box.west
+        and doc.get("south") == box.south
+        and doc.get("east") == box.east
+        and doc.get("config_hash") == config_hash
+    )
+
+
+def _write_sidecar(box: Box, out_path: Path, config_hash: str) -> None:
+    """Record what produced this tif, written only after an engine success."""
+    _sidecar_path(out_path).write_text(
+        json.dumps(
+            {
+                "version": SIDECAR_VERSION,
+                "north": box.north,
+                "west": box.west,
+                "south": box.south,
+                "east": box.east,
+                "config_hash": config_hash,
+            }
+        )
+    )
+
+
+def _prune_orphans(output_dir: Path, box_count: int) -> list[str]:
+    """Delete box tif/sidecar files whose index is beyond the manifest.
+
+    Called only after a pass that finished with no engine failure. A shorter
+    manifest renumbers the tail (ADR-0015 names by position), so any
+    `box_*.tif`/`.tif.json` with index >= box_count is a leftover from a longer
+    previous run and would otherwise be merged by encode_tiles. Returns the
+    names removed, for the caller to report.
+    """
+    removed: list[str] = []
+    for path in output_dir.iterdir():
+        match = _BOX_INDEX_RE.match(path.name)
+        if match is not None and int(match.group(1)) >= box_count:
+            path.unlink()
+            removed.append(path.name)
+    return sorted(removed)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -156,6 +265,35 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         default=None,
         help="Folder to write per-box tifs into (overrides the manifest).",
+    )
+    parser.add_argument(
+        "--fill-dir",
+        type=Path,
+        default=None,
+        help=(
+            "Folder holding us_land_fill.geojson to regenerate after a "
+            "successful pass (overrides the manifest's 'fill_dir'). The fill "
+            "has the boxes cut out of it, so it goes stale whenever the "
+            "manifest changes."
+        ),
+    )
+    parser.add_argument(
+        "--fill-script",
+        type=Path,
+        default=None,
+        help=(
+            "Path to the fill-polygon builder "
+            f"(default: {_DEFAULT_FILL_SCRIPT})."
+        ),
+    )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help=(
+            "Reprocess every box even if its bounds and config are unchanged. "
+            "Use after a DEM re-acquisition or an engine rebuild, which are "
+            "outside the freshness key (ADR-0017)."
+        ),
     )
     return parser
 
@@ -205,8 +343,21 @@ def main(argv: Sequence[str] | None = None) -> int:
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    config_hash = _config_hash(Path(config))
+
+    total = len(manifest.boxes)
     for i, box in enumerate(manifest.boxes, start=1):
         out_path = output_dir / f"{box.name}.tif"
+
+        if not args.force and _is_fresh(box, out_path, config_hash):
+            print(
+                f"[{i}/{total}] {box.name}: "
+                f"N{box.north} W{box.west} S{box.south} E{box.east} "
+                "-- unchanged, skipping",
+                flush=True,
+            )
+            continue
+
         cmd = [
             str(engine),
             "--config", str(config),
@@ -214,7 +365,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             "--output", str(out_path),
         ]
         print(
-            f"[{i}/{len(manifest.boxes)}] {box.name}: "
+            f"[{i}/{total}] {box.name}: "
             f"N{box.north} W{box.west} S{box.south} E{box.east} -> {out_path}",
             flush=True,
         )
@@ -227,10 +378,45 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
             return 1
 
+        # Record what produced this tif only now the engine has succeeded, so a
+        # crash never leaves a false "done" marker (ADR-0017).
+        _write_sidecar(box, out_path, config_hash)
+
+    # The pass finished with no engine failure: outputs from a longer previous
+    # run are now orphans encode_tiles would still merge. Prune them.
+    pruned = _prune_orphans(output_dir, total)
+    if pruned:
+        print(
+            f"Pruned {len(pruned)} orphaned file(s) beyond the manifest: "
+            + ", ".join(pruned),
+            flush=True,
+        )
+
+    # The frontend fill polygon has these boxes cut out of it, so it is stale
+    # the moment the manifest changes — rebuild it now. The script's own
+    # --if-stale provenance check makes this a fast no-op when nothing moved.
+    fill_dir = args.fill_dir or manifest.fill_dir
+    if fill_dir is not None:
+        fill_script = args.fill_script or _DEFAULT_FILL_SCRIPT
+        fill_cmd = [
+            sys.executable, str(fill_script),
+            "--boxes", str(args.manifest),
+            "--out-dir", str(fill_dir),
+            "--if-stale",
+        ]
+        if subprocess.run(fill_cmd).returncode != 0:
+            print(
+                "error: us_land_fill.geojson regeneration failed — the frontend "
+                "fill no longer matches these boxes and the map will render "
+                "stale coverage. Fix and re-run: " + " ".join(fill_cmd),
+                file=sys.stderr,
+            )
+            return 1
+
     print(
         f"Wrote {len(manifest.boxes)} box tif(s) to {output_dir}. "
         f"Encode with: python3 -m encode_tiles --input {output_dir} "
-        "--output-dir frontend/tiles/",
+        "--output-dir frontend/tiles/ --us-boundary frontend/us_land.geojson",
         flush=True,
     )
     return 0

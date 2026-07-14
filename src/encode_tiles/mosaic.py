@@ -11,6 +11,7 @@ verbatim — the encoder never interprets individual visibility bits.
 
 from __future__ import annotations
 
+import json
 import math
 import tempfile
 from contextlib import ExitStack, contextmanager
@@ -20,6 +21,7 @@ from typing import Callable, Iterator, Sequence
 
 import numpy as np
 import rasterio
+from rasterio.features import geometry_mask
 from rasterio.transform import Affine, from_bounds, from_origin
 from rasterio.warp import Resampling, reproject, transform_bounds
 from rasterio.windows import Window
@@ -191,10 +193,34 @@ def merge_deepest_interior(
     return merged
 
 
+def load_clip_geometries(path: Path) -> list[dict]:
+    """Read a GeoJSON boundary file into a list of geometry dicts.
+
+    Accepts a FeatureCollection, a single Feature, or a bare geometry — the
+    shape the Natural Earth US-land polygon ships in.  The geometries feed
+    `merge_sources`' per-strip clip; rasterio consumes GeoJSON-like dicts
+    directly, so no shapely dependency is needed.
+    """
+    doc = json.loads(path.read_text())
+    kind = doc.get("type")
+    if kind == "FeatureCollection":
+        geoms = [f["geometry"] for f in doc.get("features", []) if f.get("geometry")]
+    elif kind == "Feature":
+        geoms = [doc["geometry"]] if doc.get("geometry") else []
+    elif kind in ("Polygon", "MultiPolygon"):
+        geoms = [doc]
+    else:
+        raise ValueError(f"{path}: unsupported GeoJSON type {kind!r}")
+    if not geoms:
+        raise ValueError(f"{path}: no polygon geometries found")
+    return geoms
+
+
 def merge_sources(
     input_paths: Sequence[Path],
     dst_path: Path,
     on_progress: Callable[[int, int], None] | None = None,
+    clip_geometries: Sequence[dict] | None = None,
 ) -> FormatContract:
     """Paste all input boxes onto one common 4326 lattice (ADR-0015).
 
@@ -209,6 +235,14 @@ def merge_sources(
     strip to `dst_path` as a compressed GeoTIFF, so neither a whole box nor
     the whole lattice is ever resident in memory.  `on_progress`, if given,
     is called after each strip with (completed_strips, total_strips).
+
+    If `clip_geometries` is given (the US-land polygon), every merged pixel
+    whose centre falls outside those geometries is zeroed — turned transparent
+    — so box output that spills past the border (a coast-anchored box reaching
+    into Mexico or Canada) never reaches the tiles.  The rasterisation is
+    `all_touched` (permissive): a pixel the boundary merely grazes is kept, so
+    the simplified coastline can only ever under-clip a sliver of ocean, never
+    erase real near-coast US land.
     """
     with ExitStack() as stack:
         datasets = [stack.enter_context(rasterio.open(p)) for p in input_paths]
@@ -234,6 +268,14 @@ def merge_sources(
                     f"resolution mismatch: {path} is {ds.res}, "
                     f"{input_paths[0]} is {first_ds.res}"
                 )
+
+        if clip_geometries is not None and not first_ds.crs.is_geographic:
+            # The clip polygon is lon/lat; the boxes are 4326 too, so this only
+            # trips on a future non-geographic lattice — fail loud, don't
+            # silently mis-clip against the wrong coordinate space.
+            raise ValueError(
+                f"clip requires a geographic (lon/lat) lattice, got {first_ds.crs}"
+            )
 
         res_x, res_y = first_ds.res
         lattice_west = min(ds.bounds.left for ds in datasets)
@@ -297,6 +339,18 @@ def merge_sources(
                 _merge_window(
                     merged, best, data, ds.height, ds.width, sr0, row_off + sr0 - r0, col_off
                 )
+            if clip_geometries is not None:
+                # This strip's own north edge sits r0 rows below the lattice top.
+                strip_transform = from_origin(
+                    lattice_west, lattice_north - r0 * res_y, res_x, res_y
+                )
+                outside_us = geometry_mask(
+                    clip_geometries,
+                    out_shape=(rh, out_width),
+                    transform=strip_transform,
+                    all_touched=True,
+                )
+                merged[outside_us] = 0  # outside the US → transparent
             dst.write(merged.transpose(2, 0, 1), window=Window(0, r0, out_width, rh))
             if on_progress is not None:
                 on_progress(strip_idx + 1, total_strips)
@@ -308,26 +362,30 @@ def merge_sources(
 def open_mosaic_source(
     input_paths: Sequence[Path],
     on_merge_progress: Callable[[int, int], None] | None = None,
+    clip_geometries: Sequence[dict] | None = None,
 ) -> Iterator[tuple[rasterio.DatasetReader, FormatContract]]:
     """Open the single dataset the base-zoom encode reads from.
 
-    A single input is opened directly — exactly the pre-multi-box path.
-    Multiple inputs are first stream-merged (deepest-interior wins, ADR-0015)
-    into a temporary compressed GeoTIFF that is deleted on exit; that merge
-    reports strip progress through `on_merge_progress` when given.
+    A single input with no clip is opened directly — exactly the pre-multi-box
+    path.  Multiple inputs (or any input when `clip_geometries` is given) are
+    stream-merged (deepest-interior wins, ADR-0015) into a temporary
+    compressed GeoTIFF that is deleted on exit; that merge also applies the
+    US-land clip and reports strip progress through `on_merge_progress`.
 
     GDAL_NUM_THREADS stays set for the whole encode so GeoTIFF deflate
     codecs (and the warper, which defaults to it) use every core.
     """
     with rasterio.Env(GDAL_NUM_THREADS="ALL_CPUS"):
-        if len(input_paths) == 1:
+        if len(input_paths) == 1 and clip_geometries is None:
             with rasterio.open(input_paths[0]) as src:
                 yield src, _read_format_contract(src)
             return
 
         with tempfile.TemporaryDirectory(prefix="encode_tiles_") as tmp_dir:
             merged_path = Path(tmp_dir) / "merged.tif"
-            contract = merge_sources(input_paths, merged_path, on_merge_progress)
+            contract = merge_sources(
+                input_paths, merged_path, on_merge_progress, clip_geometries
+            )
             with rasterio.open(merged_path) as src:
                 yield src, contract
 

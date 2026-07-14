@@ -168,3 +168,213 @@ def test_missing_config_via_cli_and_manifest_exits_nonzero(
     assert rc == 2
     err = capsys.readouterr().err
     assert "engine" in err and "config" in err and "output_dir" in err
+
+
+# --- Incremental runs: skip-if-fresh, --force, and pruning (ADR-0017) -------
+
+
+def _setup(tmp_path: Path, exit_code: int = 0) -> tuple[Path, Path, Path]:
+    """A ready-to-run engine + config + two-box manifest. Returns them."""
+    engine = tmp_path / "engine.py"
+    log = _fake_engine(engine, exit_code=exit_code)
+    config = tmp_path / "pipeline.conf"
+    config.write_text("stub config")
+    out_dir = tmp_path / "boxes"
+    manifest = _manifest(tmp_path / "boxes.json", engine, config, out_dir)
+    return manifest, log, out_dir
+
+
+def test_unchanged_boxes_are_skipped_on_second_run(tmp_path: Path) -> None:
+    """A second run with no manifest/config change runs the engine zero times."""
+    manifest, log, out_dir = _setup(tmp_path)
+
+    assert main([str(manifest)]) == 0
+    assert len(log.read_text().splitlines()) == 2  # both boxes ran
+
+    # Sidecars were written next to each tif, on success.
+    assert (out_dir / "box_000.tif.json").is_file()
+    assert (out_dir / "box_001.tif.json").is_file()
+
+    log.write_text("")  # reset the call log
+    assert main([str(manifest)]) == 0
+    assert log.read_text() == ""  # nothing re-ran — both skipped
+
+
+def test_changed_bounds_reprocess_only_that_box(tmp_path: Path) -> None:
+    manifest, log, out_dir = _setup(tmp_path)
+    assert main([str(manifest)]) == 0
+
+    # Nudge box 1's bounds; box 0 is untouched.
+    doc = json.loads(manifest.read_text())
+    doc["boxes"][1]["top_left"] = [38.09, -123.20]
+    manifest.write_text(json.dumps(doc))
+
+    log.write_text("")
+    assert main([str(manifest)]) == 0
+    calls = log.read_text().splitlines()
+    assert len(calls) == 1  # only the changed box re-ran
+    assert "--bbox 38.09 -123.2 37.3 -121.79" in calls[0]
+
+
+def test_changed_config_reprocesses_all_boxes(tmp_path: Path) -> None:
+    manifest, log, out_dir = _setup(tmp_path)
+    assert main([str(manifest)]) == 0
+
+    # A config edit changes the hash, invalidating every box.
+    (tmp_path / "pipeline.conf").write_text("stub config -- tweaked")
+
+    log.write_text("")
+    assert main([str(manifest)]) == 0
+    assert len(log.read_text().splitlines()) == 2
+
+
+def test_force_reprocesses_unchanged_boxes(tmp_path: Path) -> None:
+    manifest, log, out_dir = _setup(tmp_path)
+    assert main([str(manifest)]) == 0
+
+    log.write_text("")
+    assert main([str(manifest), "--force"]) == 0
+    assert len(log.read_text().splitlines()) == 2  # --force ignored freshness
+
+
+def test_crash_writes_no_sidecar_so_box_reruns(tmp_path: Path) -> None:
+    """A failed engine leaves no sidecar; the box is not treated as done."""
+    manifest, log, out_dir = _setup(tmp_path, exit_code=1)
+
+    assert main([str(manifest)]) != 0
+    # The engine touched box_000.tif before exiting nonzero, but no sidecar.
+    assert not (out_dir / "box_000.tif.json").exists()
+
+    # Repoint at a succeeding engine; the box must re-run, not skip.
+    good = tmp_path / "engine.py"
+    good_log = _fake_engine(good, exit_code=0)
+    doc = json.loads(manifest.read_text())
+    doc["engine"] = str(good)
+    manifest.write_text(json.dumps(doc))
+
+    good_log.write_text("")  # shared log path — reset before the good run
+    assert main([str(manifest)]) == 0
+    assert len(good_log.read_text().splitlines()) == 2  # both boxes ran
+
+
+def test_missing_sidecar_reprocesses_preexisting_tif(tmp_path: Path) -> None:
+    """A tif with no sidecar (pre-feature output) reprocesses once."""
+    manifest, log, out_dir = _setup(tmp_path)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    # Simulate a leftover tif from before this feature: tif but no sidecar.
+    (out_dir / "box_000.tif").write_bytes(b"old")
+
+    assert main([str(manifest)]) == 0
+    # box_000 had no matching sidecar → it still ran (both boxes ran).
+    assert len(log.read_text().splitlines()) == 2
+
+
+def test_shorter_manifest_prunes_trailing_orphans(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    manifest, log, out_dir = _setup(tmp_path)
+    assert main([str(manifest)]) == 0
+    assert (out_dir / "box_001.tif").is_file()
+    assert (out_dir / "box_001.tif.json").is_file()
+
+    # Drop the manifest to a single box; box_001's tif + sidecar are orphans.
+    doc = json.loads(manifest.read_text())
+    doc["boxes"] = doc["boxes"][:1]
+    manifest.write_text(json.dumps(doc))
+
+    capsys.readouterr()  # clear
+    assert main([str(manifest)]) == 0
+    assert not (out_dir / "box_001.tif").exists()
+    assert not (out_dir / "box_001.tif.json").exists()
+    assert (out_dir / "box_000.tif").is_file()  # surviving box untouched
+    assert "Pruned" in capsys.readouterr().out
+
+
+# --- Fill-polygon regeneration: the fill is derived from the manifest -------
+
+
+def _fake_fill_script(path: Path, exit_code: int = 0) -> Path:
+    """Write a python script that logs its argv, standing in for the builder."""
+    log = path.parent / "fill_calls.log"
+    script = f"""#!/usr/bin/env python3
+import sys
+with open({str(log)!r}, "a") as f:
+    f.write(" ".join(sys.argv[1:]) + "\\n")
+sys.exit({exit_code})
+"""
+    path.write_text(script)
+    return log
+
+
+def test_fill_regenerated_after_every_successful_pass(tmp_path: Path) -> None:
+    """With fill_dir set, the builder runs even on an all-skipped pass.
+
+    The fill's own --if-stale check is what makes the no-change case cheap;
+    the driver must not second-guess it, or a boxes edit that only touches
+    the fill (today's bug) would be missed.
+    """
+    manifest, log, out_dir = _setup(tmp_path)
+    doc = json.loads(manifest.read_text())
+    doc["fill_dir"] = str(tmp_path / "frontend")
+    manifest.write_text(json.dumps(doc))
+    fill_script = tmp_path / "fill_script.py"
+    fill_log = _fake_fill_script(fill_script)
+
+    assert main([str(manifest), "--fill-script", str(fill_script)]) == 0
+    assert main([str(manifest), "--fill-script", str(fill_script)]) == 0  # all-skip pass
+
+    calls = fill_log.read_text().splitlines()
+    assert len(calls) == 2  # invoked on both passes
+    for call in calls:
+        assert f"--boxes {manifest}" in call
+        assert f"--out-dir {tmp_path / 'frontend'}" in call
+        assert "--if-stale" in call
+
+
+def test_fill_failure_fails_the_run(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A failed fill rebuild must not exit 0 — a stale fill breaks the map."""
+    manifest, log, out_dir = _setup(tmp_path)
+    doc = json.loads(manifest.read_text())
+    doc["fill_dir"] = str(tmp_path / "frontend")
+    manifest.write_text(json.dumps(doc))
+    fill_script = tmp_path / "fill_script.py"
+    _fake_fill_script(fill_script, exit_code=1)
+
+    rc = main([str(manifest), "--fill-script", str(fill_script)])
+    assert rc != 0
+    assert "us_land_fill" in capsys.readouterr().err
+
+
+def test_no_fill_dir_skips_regeneration(tmp_path: Path) -> None:
+    """Without fill_dir (manifest or CLI), the builder is never invoked."""
+    manifest, log, out_dir = _setup(tmp_path)
+    fill_script = tmp_path / "fill_script.py"
+    fill_log_path = tmp_path / "fill_calls.log"
+    _fake_fill_script(fill_script)
+
+    assert main([str(manifest), "--fill-script", str(fill_script)]) == 0
+    assert not fill_log_path.exists()
+
+
+def test_engine_failure_prunes_nothing(tmp_path: Path) -> None:
+    """A mid-run crash stops early and must not prune trailing outputs."""
+    # First, a clean two-box run so box_001 exists.
+    manifest, log, out_dir = _setup(tmp_path)
+    assert main([str(manifest)]) == 0
+    assert (out_dir / "box_001.tif").is_file()
+
+    # Shrink the manifest, point at a failing engine, AND change the surviving
+    # box's bounds so it actually re-runs (and fails) rather than skipping.
+    bad = tmp_path / "bad_engine.py"
+    _fake_engine(bad, exit_code=1)
+    doc = json.loads(manifest.read_text())
+    doc["boxes"] = doc["boxes"][:1]
+    doc["boxes"][0]["top_left"] = [38.61, -123.60]
+    doc["engine"] = str(bad)
+    manifest.write_text(json.dumps(doc))
+
+    assert main([str(manifest)]) != 0
+    # The run failed before completing, so the orphan must survive.
+    assert (out_dir / "box_001.tif").is_file()

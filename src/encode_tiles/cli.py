@@ -15,6 +15,7 @@ from encode_tiles.mosaic import (
     TILE_SIZE,
     compute_base_spec,
     iter_base_tile_rows,
+    load_clip_geometries,
     open_mosaic_source,
 )
 from encode_tiles.tilejson import build_tilejson
@@ -85,6 +86,17 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--us-boundary",
+        type=Path,
+        default=None,
+        help=(
+            "GeoJSON US-land polygon (e.g. frontend/us_land.geojson). When "
+            "given, merged pixels outside it are zeroed to transparent, so box "
+            "output spilling past the border never reaches the tiles. Omit to "
+            "keep every computed pixel."
+        ),
+    )
+    parser.add_argument(
         "--no-progress",
         action="store_true",
         help="Suppress the progress bars (auto-off when stderr is not a terminal).",
@@ -151,6 +163,20 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"error: --workers ({args.workers}) must be >= 1", file=sys.stderr)
         return 2
 
+    clip_geometries = None
+    if args.us_boundary is not None:
+        if not args.us_boundary.is_file():
+            print(
+                f"error: --us-boundary not found: {args.us_boundary}",
+                file=sys.stderr,
+            )
+            return 2
+        try:
+            clip_geometries = load_clip_geometries(args.us_boundary)
+        except ValueError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
+
     if args.output_dir.exists():
         shutil.rmtree(args.output_dir)
     args.output_dir.mkdir(parents=True, exist_ok=True)
@@ -159,7 +185,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     merge_bar = progress.MergeBar() if show_progress else None
 
     try:
-        with open_mosaic_source(inputs, merge_bar) as (src, contract):
+        with open_mosaic_source(inputs, merge_bar, clip_geometries) as (src, contract):
             if merge_bar is not None:
                 merge_bar.close()  # merge is done once the context is entered
             spec = compute_base_spec(src, contract, zoom=args.max_zoom)

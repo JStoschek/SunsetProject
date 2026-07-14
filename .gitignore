@@ -54,4 +54,13 @@ __pycache__/
 
 # Profiling output
 profile.json.gz
-azimuth.json           # captured Firefox profiler trace, not pipeline output
+# captured Firefox profiler trace, not pipeline output (a gitignore pattern
+# cannot carry a trailing comment — it becomes part of the pattern)
+azimuth.json
+
+# Local box manifest (template: boxes.example.json)
+/boxes.json
+
+# Derived from the local boxes.json by the run_boxes driver (fill_dir) —
+# regenerated automatically, like the tile pyramid above.
+/frontend/us_land_fill.geojson
