@@ -23,7 +23,7 @@ from encode_tiles.tiles import build_pyramid
 
 
 DEFAULT_OUTPUT_DIR = Path("build/tiles")
-DEFAULT_MIN_ZOOM = 6
+DEFAULT_MIN_ZOOM = 5
 DEFAULT_MAX_ZOOM = 14
 DEFAULT_COMPRESS_LEVEL = 6
 

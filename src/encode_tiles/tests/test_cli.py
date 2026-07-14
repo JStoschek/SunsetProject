@@ -46,7 +46,7 @@ def test_defaults() -> None:
     parser = build_parser()
     args = parser.parse_args(["--input", "x.tif"])
     assert args.output_dir == DEFAULT_OUTPUT_DIR
-    assert args.min_zoom == DEFAULT_MIN_ZOOM == 6
+    assert args.min_zoom == DEFAULT_MIN_ZOOM == 5
     assert args.max_zoom == DEFAULT_MAX_ZOOM == 14
 
 
