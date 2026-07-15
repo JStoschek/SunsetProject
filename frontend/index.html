@@ -3,22 +3,18 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Sunset Visibility Map</title>
+  <title>Sunset Scout — where the last light lands</title>
 
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght,SOFT,WONK@9..144,300..700,0..100,0..1&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet" />
+  <link href="https://fonts.googleapis.com/css2?family=Zilla+Slab:wght@500;600;700&family=Barlow+Condensed:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
 
   <!-- Self-hosted map libs (vendored, no third-party CDN). See frontend/vendor/. -->
   <link href="vendor/maplibre-gl.css" rel="stylesheet" />
   <script src="vendor/maplibre-gl.js"></script>
-  <!-- PMTiles protocol: reads the local vector basemap (frontend/basemap/basemap.pmtiles). Attaches global pmtiles. -->
   <script src="vendor/pmtiles.js"></script>
-  <!-- Protomaps "light" theme layers (generated from protomaps-themes-base). Attaches window.PROTOMAPS_THEME_LAYERS. -->
   <script src="vendor/basemap_theme.js"></script>
-  <!-- SunCalc (vendored). Attaches global SunCalc. -->
   <script src="vendor/suncalc.js"></script>
-  <!-- Pure modules; UMD attaches sunsetAzimuth / BitLayout / colorizeBitmaskPixel / assertSupportedFormatVersion globals. -->
   <script src="sunset_azimuth.js"></script>
   <script src="bit_layout.js"></script>
   <script src="colorizer.js"></script>
@@ -26,248 +22,300 @@
   <script src="format_guard.js"></script>
 
   <style>
-  /* ─── design theme (ported verbatim from the Claude-design prototype) ──── */
+  /* ═══ Sunset Lookout · final — trailhead palette, year-rail dock ═════════ */
   :root{
-    --cream:#f7e3b4;
-    --dusk:#7d1c1f;
-    --amber:#f0a363;
-    --ink:#1a1008;
-    --paper:#faf6ee;
-    --accent:#7d1c1f;
-    --fr-soft:60;
-    --fr-wonk:1;
+    --pine:#28402f;          /* deep pine — borders, ink on kraft       */
+    --pine-2:#3c5844;        /* lighter pine — secondary strokes        */
+    --kraft:#f0e6cd;         /* sign board                              */
+    --kraft-2:#e3d6b2;       /* inset / recessed areas                  */
+    --ember:#cf5b2e;         /* rust-ember accent                       */
+    --brass:#d99a2b;         /* brass fittings — curve, sun knob        */
+    --brown:#41372a;         /* body text on kraft                      */
+    --faded:rgba(65,55,42,.62);
+    --plate-shadow:0 2px 0 rgba(40,64,47,.35),0 12px 26px -12px rgba(40,64,47,.5);
+    --radius:10px;
   }
   *{box-sizing:border-box;}
-  html,body{margin:0;height:100%;overflow:hidden;background:var(--ink);}
-  body{font-family:'Space Mono',ui-monospace,monospace;}
+  html,body{margin:0;height:100%;overflow:hidden;background:#e9e2d4;}
+  body{font-family:'Zilla Slab',Georgia,serif;color:var(--brown);}
+  .cond{font-family:'Barlow Condensed',sans-serif;}
+  .mono{font-family:'IBM Plex Mono',ui-monospace,monospace;}
+  button{font-family:inherit;}
+  button:focus-visible{outline:2.5px solid var(--ember);outline-offset:2px;}
 
-  .serif{
-    font-family:'Fraunces',Georgia,serif;
-    font-optical-sizing:auto;
-    font-variation-settings:'SOFT' var(--fr-soft),'WONK' var(--fr-wonk);
-  }
-
-  /* map + atmosphere */
   #map{position:fixed;inset:0;}
   .maplibregl-map{background:#e9e2d4;font:inherit;}
-  #dusk{position:fixed;inset:0;pointer-events:none;z-index:1;mix-blend-mode:multiply;
-    background:
-      radial-gradient(120% 85% at 50% 122%, rgba(240,163,99,.12) 0%, rgba(240,163,99,.03) 42%, transparent 62%),
-      linear-gradient(180deg, rgba(125,28,31,.05) 0%, transparent 26%);
-    box-shadow:inset 0 0 280px 60px rgba(26,16,8,.13);}
-  #glow{position:fixed;inset:0;pointer-events:none;z-index:2;
-    background:
-      radial-gradient(95% 55% at 50% 124%, rgba(247,227,180,.11) 0%, transparent 56%),
-      radial-gradient(120% 70% at 50% -12%, rgba(247,227,180,.05) 0%, transparent 50%);}
 
-  /* locked-location marker */
-  .sun-marker{position:relative;width:18px;height:18px;transition:opacity .35s ease;
-    pointer-events:none;}
-  .sm-core{position:absolute;inset:5px;border-radius:50%;background:var(--amber);
-    box-shadow:0 0 0 2px rgba(26,16,8,.55),0 0 16px 3px rgba(240,163,99,.8);}
-  .sm-ring{position:absolute;inset:0;border-radius:50%;border:1.5px solid var(--amber);
-    animation:sunPulse 2.4s cubic-bezier(.4,0,.2,1) infinite;}
-  @keyframes sunPulse{
+  /* shared "routed sign" plate */
+  .plate{background:var(--kraft);border:2px solid var(--pine);
+    border-radius:var(--radius);box-shadow:var(--plate-shadow);}
+
+  /* ── sign board (top left): name + the simple legend ──────────────────── */
+  .board{position:fixed;top:16px;left:16px;z-index:10;padding:11px 15px 10px;}
+  .board-name{margin:0;font-size:19px;font-weight:700;line-height:1.05;
+    color:var(--pine);letter-spacing:.01em;}
+  .legend{display:flex;gap:14px;margin-top:8px;padding-top:8px;
+    border-top:1.5px dashed rgba(40,64,47,.3);}
+  .legend span{display:flex;align-items:center;gap:6px;
+    font-family:'Barlow Condensed',sans-serif;font-weight:600;font-size:12px;
+    letter-spacing:.08em;text-transform:uppercase;color:var(--faded);white-space:nowrap;}
+  .swatch{width:12px;height:12px;border-radius:3px;border:1.5px solid var(--pine);flex:none;}
+  .swatch-lit{background:#fdfaf2;}
+  .swatch-dark{background:#4c524f;}
+
+  /* ── control stack (top right) ────────────────────────────────────────── */
+  .ctl-stack{position:fixed;top:16px;right:16px;z-index:10;display:flex;
+    flex-direction:column;gap:8px;}
+  .ctl-btn{width:40px;height:40px;display:flex;align-items:center;justify-content:center;
+    cursor:pointer;color:var(--pine);background:var(--kraft);
+    border:2px solid var(--pine);border-radius:var(--radius);
+    box-shadow:var(--plate-shadow);
+    transition:transform .16s ease,background .16s ease;}
+  .ctl-btn:hover{background:#f7efdb;transform:translateY(-1px);}
+  .ctl-btn[data-busy="1"]{color:var(--ember);animation:locPulse 1.1s ease-in-out infinite;}
+  @keyframes locPulse{0%,100%{opacity:1;}50%{opacity:.45;}}
+
+  .toast{position:fixed;top:66px;right:16px;z-index:30;max-width:260px;
+    background:var(--pine);color:var(--kraft);border-radius:var(--radius);
+    padding:10px 14px;font-size:13px;line-height:1.5;box-shadow:var(--plate-shadow);
+    opacity:0;transform:translateY(-6px);pointer-events:none;
+    transition:opacity .25s ease,transform .3s cubic-bezier(.3,1.4,.5,1);}
+  .toast[data-show="1"]{opacity:1;transform:none;}
+
+  /* ── spot plate (right, left of the controls) ─────────────────────────── */
+  .spot-plate{position:fixed;right:72px;top:16px;z-index:10;width:288px;
+    max-width:calc(100vw - 100px);overflow:hidden;
+    opacity:0;transform:translateX(12px) scale(.97);pointer-events:none;
+    transition:opacity .22s ease,transform .3s cubic-bezier(.3,1.35,.5,1);}
+  .spot-plate[data-open="1"]{opacity:1;transform:none;pointer-events:auto;}
+
+  .sp-head{padding:13px 15px 12px;position:relative;
+    border-bottom:2px solid var(--pine);}
+  .sp-coords{font-size:12.5px;font-weight:500;letter-spacing:.02em;color:var(--pine);
+    font-variant-numeric:tabular-nums;}
+  .sp-verdict{margin:6px 0 0;font-size:20px;line-height:1.15;font-weight:700;
+    color:var(--pine);letter-spacing:.005em;}
+  .spot-plate[data-verdict="visible"] .sp-verdict{color:var(--ember);}
+  .spot-plate[data-verdict="none"] .sp-verdict{color:var(--faded);font-size:16px;}
+  .sp-close{position:absolute;top:9px;right:9px;width:26px;height:26px;
+    display:flex;align-items:center;justify-content:center;cursor:pointer;
+    border:none;border-radius:7px;background:transparent;color:var(--faded);
+    transition:background .15s ease,color .15s ease;}
+  .sp-close:hover{background:rgba(40,64,47,.1);color:var(--pine);}
+
+  .sp-rows{padding:4px 15px 8px;}
+  .sp-row{display:flex;align-items:baseline;justify-content:space-between;gap:12px;
+    padding:8px 0;}
+  .sp-row + .sp-row{border-top:1.5px dashed rgba(40,64,47,.22);}
+  .sp-key{font-family:'Barlow Condensed',sans-serif;font-weight:600;font-size:13px;
+    letter-spacing:.1em;text-transform:uppercase;color:var(--faded);}
+  .sp-val{font-family:'IBM Plex Mono',monospace;font-size:13.5px;font-weight:500;
+    color:var(--brown);font-variant-numeric:tabular-nums;text-align:right;}
+  .sp-foot{padding:8px 15px 11px;border-top:1.5px dashed rgba(40,64,47,.22);
+    font-size:11.5px;line-height:1.45;color:var(--faded);}
+
+  /* selected-spot marker */
+  .spot-marker{position:relative;width:18px;height:18px;pointer-events:none;}
+  .spm-core{position:absolute;inset:5px;border-radius:50%;background:var(--ember);
+    box-shadow:0 0 0 2px var(--kraft),0 0 12px 2px rgba(207,91,46,.75);}
+  .spm-ring{position:absolute;inset:0;border-radius:50%;border:1.5px solid var(--ember);
+    animation:spotPulse 2.4s cubic-bezier(.4,0,.2,1) infinite;}
+  @keyframes spotPulse{
     0%{transform:scale(.7);opacity:.9;}
     70%{transform:scale(2.1);opacity:0;}
     100%{opacity:0;}
   }
 
-  /* ═══ Lat/Lon card + Extra Info panel ═══════════════════════════════════ */
-  .info-card{position:fixed;left:22px;bottom:22px;z-index:10;display:flex;flex-direction:column;
-    align-items:flex-start;gap:10px;max-width:min(380px,calc(100vw - 44px));}
+  /* ── the year-rail dock (bottom center, from alt) ─────────────────────── */
+  .dock{position:fixed;left:50%;bottom:16px;transform:translateX(-50%);z-index:10;
+    display:flex;align-items:stretch;gap:8px;
+    width:min(780px,calc(100vw - 28px));}
+  .dock-side{display:flex;flex-direction:column;gap:6px;justify-content:center;}
 
-  .ll-pill{display:flex;align-items:center;gap:14px;cursor:pointer;
-    padding:11px 16px 11px 13px;border:none;border-radius:15px;
-    background:var(--ink);color:var(--cream);
-    font-family:'Space Mono',monospace;text-align:left;
-    box-shadow:0 10px 30px -10px rgba(26,16,8,.6),0 1px 0 rgba(247,227,180,.12) inset;
-    transition:transform .3s cubic-bezier(.34,1.56,.64,1),box-shadow .3s ease;}
-  .ll-pill:hover{transform:translateY(-2px);
-    box-shadow:0 16px 36px -12px rgba(26,16,8,.7),0 1px 0 rgba(247,227,180,.18) inset;}
-
-  .ll-chev{display:flex;color:var(--amber);transition:transform .35s cubic-bezier(.34,1.56,.64,1);}
-  .info-card[data-open="1"] .ll-chev{transform:rotate(180deg);}
-  .ll-coord{display:flex;flex-direction:column;gap:1px;line-height:1;}
-  .ll-tag{font-size:9px;letter-spacing:.14em;color:var(--amber);font-weight:600;
-    text-transform:uppercase;}
-  .ll-num{font-size:13.5px;letter-spacing:.01em;color:var(--cream);
-    font-variant-numeric:tabular-nums;}
-  .ll-div{width:1px;align-self:stretch;background:rgba(247,227,180,.18);margin:1px 0;}
-
-  /* panel reveal — spring */
-  .info-panel{width:300px;max-width:100%;transform-origin:bottom left;
-    background:var(--ink);color:var(--cream);border-radius:18px;overflow:hidden;
-    box-shadow:0 18px 50px -14px rgba(26,16,8,.7),0 1px 0 rgba(247,227,180,.12) inset;
-    opacity:0;max-height:0;transform:translateY(14px) scale(.95);pointer-events:none;
-    transition:opacity .26s ease,max-height .38s cubic-bezier(.34,1.5,.5,1),
-      transform .42s cubic-bezier(.34,1.56,.64,1),overflow 0s linear .42s;}
-  .info-card[data-open="1"] .info-panel{opacity:1;max-height:360px;
-    transform:none;pointer-events:auto;overflow:visible;
-    transition:opacity .26s ease,max-height .38s cubic-bezier(.34,1.5,.5,1),
-      transform .42s cubic-bezier(.34,1.56,.64,1),overflow 0s linear .42s;}
-
-  .info-panel-head{display:flex;flex-direction:column;align-items:flex-start;gap:3px;
-    padding:15px 18px 11px;border-bottom:1px solid rgba(247,227,180,.12);}
-  .ip-title{font-size:17px;font-weight:600;color:var(--cream);letter-spacing:.005em;}
-  .ip-coords{font-size:9.5px;color:rgba(247,227,180,.55);letter-spacing:.02em;
-    font-variant-numeric:tabular-nums;white-space:nowrap;}
-
-  .info-fields{padding:6px 8px 10px;}
-  .layout-grid .info-fields{display:grid;grid-template-columns:1fr 1fr;gap:2px;}
-  .info-field{position:relative;padding:11px 10px;border-radius:11px;
-    display:flex;flex-direction:column;gap:4px;cursor:default;outline:none;
-    transition:background .2s ease;}
-  .info-field:hover,.info-field:focus-visible{background:rgba(247,227,180,.07);}
-  .if-label{font-size:11.5px;font-weight:500;letter-spacing:.04em;text-transform:uppercase;
-    color:rgba(247,227,180,.62);}
-  .if-value{font-size:18px;color:var(--cream);letter-spacing:.005em;font-weight:700;
-    font-variant-numeric:tabular-nums;}
-  .layout-grid .if-value{font-size:16px;}
-  /* visibility verdict accents */
-  .info-field[data-verdict="visible"] .if-value{color:var(--amber);}
-  .info-field[data-verdict="blocked"] .if-value{color:rgba(247,227,180,.5);}
-
-  /* tooltips — cream bubble, fade + drift (grid: above the field) */
-  .if-tip{position:absolute;z-index:20;width:200px;
-    background:var(--cream);color:var(--ink);
-    font-family:'Space Mono',monospace;font-size:11px;line-height:1.5;
-    padding:11px 13px;border-radius:13px;
-    box-shadow:0 14px 34px -10px rgba(26,16,8,.55);
-    opacity:0;pointer-events:none;
-    bottom:calc(100% + 12px);left:50%;margin-left:-100px;
-    transform:translateY(8px);
-    transition:opacity .22s ease,transform .28s cubic-bezier(.34,1.5,.5,1);}
-  .if-tip-term{display:block;font-size:12px;font-weight:600;margin-bottom:3px;
-    color:var(--dusk);letter-spacing:.005em;}
-  .info-field:hover .if-tip,.info-field:focus-visible .if-tip{
-    opacity:1;transform:translateY(0);}
-  .if-tip::after{content:"";position:absolute;top:100%;left:50%;
-    transform:translateX(-50%);border:7px solid transparent;border-top-color:var(--cream);}
-
-  /* ═══ Date picker + calendar ════════════════════════════════════════════ */
-  .date-card{position:fixed;top:22px;left:50%;transform:translateX(-50%);z-index:10;
-    display:flex;flex-direction:column;align-items:center;gap:11px;}
-
-  .date-pill{display:flex;align-items:center;gap:16px;cursor:pointer;
-    padding:10px 16px 10px 20px;border:none;border-radius:16px;
-    background:var(--paper);color:var(--ink);
-    box-shadow:0 12px 32px -12px rgba(26,16,8,.5),0 0 0 .5px rgba(26,16,8,.06);
-    transition:transform .3s cubic-bezier(.34,1.56,.64,1),box-shadow .3s ease;}
-  .date-pill:hover{transform:translateY(-2px);
-    box-shadow:0 18px 40px -14px rgba(26,16,8,.6),0 0 0 .5px rgba(26,16,8,.08);}
-  .dp-text{display:flex;flex-direction:column;align-items:flex-start;gap:1px;line-height:1;
+  .date-chip{display:flex;flex-direction:column;align-items:flex-start;gap:1px;
+    cursor:pointer;text-align:left;color:var(--brown);
+    padding:8px 14px;min-width:120px;
+    transition:background .16s ease,transform .16s ease;}
+  .date-chip:hover{background:#f7efdb;transform:translateY(-1px);}
+  .dc-wk{font-family:'Barlow Condensed',sans-serif;font-weight:600;font-size:11px;
+    letter-spacing:.18em;color:var(--ember);text-transform:uppercase;}
+  .dc-date{font-size:19px;font-weight:700;line-height:1.05;color:var(--pine);
     white-space:nowrap;}
-  .dp-weekday{font-family:'Space Mono',monospace;font-size:9px;letter-spacing:.16em;
-    color:var(--dusk);font-weight:700;}
-  .dp-main{font-family:'Space Mono',ui-monospace,monospace;font-size:18.5px;font-weight:700;
-    color:var(--ink);line-height:1.1;letter-spacing:-.01em;white-space:nowrap;}
-  .dp-year{font-family:'Space Mono',monospace;font-size:13px;color:rgba(26,16,8,.5);
-    font-variant-numeric:tabular-nums;align-self:flex-end;padding-bottom:2px;}
-  .dp-chev{display:flex;color:rgba(26,16,8,.4);
-    transition:transform .35s cubic-bezier(.34,1.56,.64,1);}
-  .date-card[data-open="1"] .dp-chev{transform:rotate(180deg);}
+  .dc-yr{font-family:'IBM Plex Mono',monospace;font-size:10.5px;color:var(--faded);}
 
-  /* calendar drop */
-  .cal{width:312px;background:var(--paper);border-radius:20px;overflow:hidden;
-    box-shadow:0 22px 56px -16px rgba(26,16,8,.55),0 0 0 .5px rgba(26,16,8,.06);
-    transform-origin:top center;
-    opacity:0;max-height:0;transform:translateY(-10px) scale(.96);pointer-events:none;
-    transition:opacity .24s ease,max-height .4s cubic-bezier(.34,1.4,.5,1),
-      transform .4s cubic-bezier(.34,1.56,.64,1);}
-  .date-card[data-open="1"] .cal{opacity:1;max-height:430px;transform:none;pointer-events:auto;}
+  .rail-wrap{flex:1;display:flex;flex-direction:column;padding:5px 8px 3px;}
+  .rail-cap{text-align:center;font-family:'Barlow Condensed',sans-serif;
+    font-weight:600;font-size:10.5px;letter-spacing:.2em;text-transform:uppercase;
+    color:var(--faded);padding:1px 0 2px;white-space:nowrap;overflow:hidden;
+    text-overflow:ellipsis;}
+  .rail-cap[data-strip="1"]{color:var(--ember);}
+  .rail-row{display:flex;align-items:stretch;flex:1;}
+  .rail-step{width:30px;border:none;background:transparent;color:var(--faded);
+    cursor:pointer;border-radius:8px;display:flex;align-items:center;justify-content:center;
+    transition:background .15s ease,color .15s ease;flex:none;}
+  .rail-step:hover{background:rgba(40,64,47,.1);color:var(--pine);}
 
-  .cal-head{display:flex;align-items:center;justify-content:space-between;
-    padding:16px 18px 10px;}
-  .cal-title{font-size:21px;font-weight:600;color:var(--ink);letter-spacing:.005em;white-space:nowrap;}
-  .cal-year{color:rgba(26,16,8,.42);font-weight:400;}
-  .cal-nav{width:30px;height:30px;display:flex;align-items:center;justify-content:center;
-    border:none;border-radius:9px;background:transparent;color:rgba(26,16,8,.55);
-    cursor:pointer;transition:background .18s ease,color .18s ease;}
-  .cal-nav:hover{background:rgba(26,16,8,.07);color:var(--ink);}
-  .rot-l{transform:rotate(-90deg);}
-  .rot-r{transform:rotate(90deg);}
+  .rail{position:relative;flex:1;cursor:pointer;touch-action:none;outline:none;
+    border-radius:8px;}
+  .rail:focus-visible{box-shadow:0 0 0 2.5px var(--ember);}
+  .rail svg{display:block;width:100%;height:64px;}
+  .rail .az-curve{fill:none;stroke:var(--brass);stroke-width:1.8;opacity:.95;}
+  .rail .az-fill{fill:url(#railGlow);opacity:.5;}
+  .rail .tick{stroke:rgba(40,64,47,.35);stroke-width:1;}
+  .rail .tick-label{fill:var(--faded);font-family:'Barlow Condensed',sans-serif;
+    font-weight:600;font-size:8px;letter-spacing:.08em;}
+  .rail .month{fill:rgba(65,55,42,.5);font-family:'IBM Plex Mono',monospace;
+    font-size:8px;text-anchor:middle;}
+  .rail .today-mark{stroke:rgba(207,91,46,.6);stroke-width:1;stroke-dasharray:2 3;}
+  .rail .day-v{fill:var(--ember);}
+  .rail .day-b{fill:rgba(40,64,47,.18);}
 
-  .cal-week{display:grid;grid-template-columns:repeat(7,1fr);padding:0 14px 4px;}
-  .cal-week span{text-align:center;font-family:'Space Mono',monospace;font-size:10px;
-    font-weight:700;letter-spacing:.06em;color:rgba(26,16,8,.4);padding:4px 0;}
+  .knob{position:absolute;top:0;width:22px;height:100%;margin-left:-11px;
+    display:flex;align-items:center;justify-content:center;pointer-events:none;}
+  .knob-line{position:absolute;top:4px;bottom:16px;width:1px;
+    background:rgba(207,91,46,.55);}
+  .knob-sun{position:relative;width:13px;height:13px;border-radius:50%;
+    background:var(--brass);border:2px solid var(--pine);
+    box-shadow:0 0 0 2px var(--kraft),0 0 10px 1px rgba(217,154,43,.7);
+    transition:transform .18s ease;}
+  .rail[data-drag="1"] .knob-sun{transform:scale(1.25);border-color:var(--ember);}
 
-  .cal-grid-wrap{padding:2px 14px 16px;perspective:1100px;}
-  .cal-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:2px;transform-origin:center;}
-  .cal-grid[data-dir="1"]{animation:pageNext .44s cubic-bezier(.2,.7,.3,1);}
-  .cal-grid[data-dir="-1"]{animation:pagePrev .44s cubic-bezier(.2,.7,.3,1);}
-  @keyframes pageNext{
-    0%{opacity:0;transform:translateX(30px) rotateY(-18deg);}
-    100%{opacity:1;transform:none;}
-  }
-  @keyframes pagePrev{
-    0%{opacity:0;transform:translateX(-30px) rotateY(18deg);}
-    100%{opacity:1;transform:none;}
-  }
-  .cal-empty{aspect-ratio:1;}
-  .cal-day{aspect-ratio:1;display:flex;align-items:center;justify-content:center;
-    border:none;border-radius:10px;background:transparent;cursor:pointer;
-    font-family:'Space Mono',monospace;font-size:13.5px;color:var(--ink);
-    position:relative;transition:background .16s ease,color .16s ease;
-    font-variant-numeric:tabular-nums;}
-  .cal-day:hover{background:rgba(26,16,8,.07);}
-  .cal-day[data-today="1"]::after{content:"";position:absolute;bottom:6px;left:50%;
-    transform:translateX(-50%);width:4px;height:4px;border-radius:50%;background:var(--dusk);}
-  .cal-day[data-selected="1"]{background:var(--accent);color:var(--cream);font-weight:700;
-    animation:dayGlow 2.6s ease-in-out infinite;}
-  .cal-day[data-selected="1"]:hover{background:var(--accent);}
-  .cal-day[data-selected="1"][data-today="1"]::after{background:var(--cream);}
-  @keyframes dayGlow{
-    0%,100%{box-shadow:0 0 0 0 color-mix(in srgb,var(--accent) 55%,transparent);}
-    50%{box-shadow:0 0 0 6px color-mix(in srgb,var(--accent) 0%,transparent),
-      0 0 16px 1px color-mix(in srgb,var(--accent) 45%,transparent);}
+  .today-btn{cursor:pointer;color:var(--faded);padding:0 14px;
+    font-family:'Barlow Condensed',sans-serif;font-weight:600;font-size:13px;
+    letter-spacing:.14em;text-transform:uppercase;height:100%;
+    transition:background .16s ease,color .16s ease;}
+  .today-btn:hover{background:#f7efdb;color:var(--pine);}
+  .today-btn[data-today="1"]{color:var(--ember);}
+
+  /* ── mini calendar popover ────────────────────────────────────────────── */
+  .mini-cal{position:fixed;z-index:20;width:256px;padding:12px 12px 10px;
+    opacity:0;transform:translateY(10px) scale(.97);pointer-events:none;
+    transform-origin:bottom left;
+    transition:opacity .2s ease,transform .3s cubic-bezier(.3,1.4,.5,1);}
+  .mini-cal[data-open="1"]{opacity:1;transform:none;pointer-events:auto;}
+  .mc-head{display:flex;align-items:center;justify-content:space-between;
+    padding:0 2px 8px;}
+  .mc-title{font-size:16px;font-weight:700;color:var(--pine);}
+  .mc-title .yr{color:var(--faded);font-weight:500;}
+  .mc-nav{width:26px;height:26px;border:1.5px solid var(--pine);border-radius:7px;
+    background:var(--kraft-2);color:var(--pine);cursor:pointer;
+    display:flex;align-items:center;justify-content:center;
+    transition:background .15s ease;}
+  .mc-nav:hover{background:#f7efdb;}
+  .mc-week{display:grid;grid-template-columns:repeat(7,1fr);padding-bottom:2px;}
+  .mc-week span{text-align:center;font-family:'Barlow Condensed',sans-serif;
+    font-weight:600;font-size:10px;letter-spacing:.06em;color:var(--faded);padding:3px 0;}
+  .mc-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:1px;}
+  .mc-empty{aspect-ratio:1;}
+  .mc-day{aspect-ratio:1;border:none;border-radius:7px;background:transparent;
+    color:var(--brown);cursor:pointer;font-size:12px;
+    font-family:'IBM Plex Mono',monospace;font-variant-numeric:tabular-nums;
+    position:relative;transition:background .14s ease;}
+  .mc-day:hover{background:rgba(40,64,47,.1);}
+  .mc-day[data-today="1"]::after{content:"";position:absolute;bottom:3px;left:50%;
+    transform:translateX(-50%);width:3px;height:3px;border-radius:50%;background:var(--ember);}
+  .mc-day[data-selected="1"]{background:var(--ember);color:var(--kraft);font-weight:600;}
+
+  .maplibregl-ctrl-attrib{font-size:10px;}
+
+  /* ── responsive ───────────────────────────────────────────────────────── */
+  @media (max-width:760px){
+    .board{padding:9px 12px 8px;}
+    .board-name{font-size:16px;}
+    .legend{gap:4px 10px;flex-wrap:wrap;}
+    .spot-plate{right:12px;left:12px;width:auto;top:auto;bottom:186px;
+      max-height:calc(100vh - 210px);overflow-y:auto;}
+    .sp-foot{display:none;}
+    .dock{bottom:12px;flex-wrap:wrap;gap:6px;}
+    .dock-side{flex-direction:row;order:2;flex:1;}
+    .date-chip{flex:1;}
+    .today-btn{padding:10px 14px;height:auto;}
+    .rail-wrap{order:1;width:100%;flex-basis:100%;}
   }
 
   @media (prefers-reduced-motion:reduce){
-    *{animation-duration:.001ms!important;transition-duration:.08s!important;}
+    *{animation-duration:.001ms!important;transition-duration:.06s!important;}
   }
   </style>
 </head>
 <body>
   <div id="map"></div>
-  <div id="dusk"></div>
-  <div id="glow"></div>
 
-  <!-- Lat/Lon pill → Selected Observer info panel -->
-  <div class="info-card" id="info-card" data-open="0">
-    <div class="info-panel layout-grid" id="info-panel" aria-hidden="true">
-      <div class="info-panel-head">
-        <span class="ip-title serif">Sunset here</span>
-        <span class="ip-coords" id="ip-coords">—</span>
-      </div>
-      <div class="info-fields" id="info-fields"></div>
+  <!-- sign board: name + simple legend -->
+  <header class="board plate">
+    <h1 class="board-name">Sunset Scout</h1>
+    <div class="legend">
+      <span><i class="swatch swatch-lit"></i>sunset visible</span>
+      <span><i class="swatch swatch-dark"></i>blocked</span>
     </div>
-    <button class="ll-pill" id="ll-pill" aria-expanded="false" aria-label="Toggle sunset details">
-      <span class="ll-chev" id="ll-chev"></span>
-      <span class="ll-coord">
-        <span class="ll-tag serif">LAT</span>
-        <span class="ll-num" id="ll-lat">—</span>
-      </span>
-      <span class="ll-div"></span>
-      <span class="ll-coord">
-        <span class="ll-tag serif">LON</span>
-        <span class="ll-num" id="ll-lon">—</span>
-      </span>
+  </header>
+
+  <!-- controls -->
+  <div class="ctl-stack">
+    <button class="ctl-btn" id="locate" aria-label="Find my location">
+      <svg width="17" height="17" viewBox="0 0 17 17">
+        <circle cx="8.5" cy="8.5" r="4.6" fill="none" stroke="currentColor" stroke-width="1.6"/>
+        <circle cx="8.5" cy="8.5" r="1.6" fill="currentColor"/>
+        <path d="M8.5 .8v2.6M8.5 13.6v2.6M.8 8.5h2.6M13.6 8.5h2.6" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+      </svg>
     </button>
+    <button class="ctl-btn" id="zoom-in" aria-label="Zoom in">
+      <svg width="15" height="15" viewBox="0 0 15 15"><path d="M7.5 2v11M2 7.5h11" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+    </button>
+    <button class="ctl-btn" id="zoom-out" aria-label="Zoom out">
+      <svg width="15" height="15" viewBox="0 0 15 15"><path d="M2 7.5h11" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+    </button>
+  </div>
+  <div class="toast" id="toast" role="status"></div>
+
+  <!-- spot plate -->
+  <aside class="spot-plate plate" id="spot-plate" data-open="0" data-verdict="none" aria-hidden="true">
+    <div class="sp-head">
+      <div class="sp-coords mono" id="sp-coords">—</div>
+      <h2 class="sp-verdict" id="sp-verdict">—</h2>
+      <button class="sp-close" id="sp-close" aria-label="Close">
+        <svg width="11" height="11" viewBox="0 0 11 11"><path d="M1.5 1.5 9.5 9.5M9.5 1.5 1.5 9.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+      </button>
+    </div>
+    <div class="sp-rows" id="sp-rows"></div>
+    <div class="sp-foot">Times in Pacific Standard Time.</div>
+  </aside>
+
+  <!-- year-rail dock -->
+  <div class="dock">
+    <div class="dock-side">
+      <button class="date-chip plate" id="date-chip" aria-expanded="false" aria-label="Pick a date">
+        <span class="dc-wk" id="dc-wk"></span>
+        <span class="dc-date" id="dc-date"></span>
+        <span class="dc-yr" id="dc-yr"></span>
+      </button>
+    </div>
+    <div class="rail-wrap plate">
+      <span class="rail-cap" id="rail-cap" data-strip="0">Drag the sun to pick a date</span>
+      <div class="rail-row">
+        <button class="rail-step" id="step-back" aria-label="Previous day">
+          <svg width="12" height="12" viewBox="0 0 12 12"><path d="M8 1.5 3.5 6 8 10.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
+        <div class="rail" id="rail" role="slider" tabindex="0" aria-label="Day of the year"
+             aria-valuemin="1" aria-valuemax="366" aria-valuenow="1" aria-valuetext="">
+          <svg id="rail-svg" preserveAspectRatio="none"></svg>
+          <div class="knob" id="knob">
+            <span class="knob-line"></span>
+            <span class="knob-sun"></span>
+          </div>
+        </div>
+        <button class="rail-step" id="step-fwd" aria-label="Next day">
+          <svg width="12" height="12" viewBox="0 0 12 12"><path d="M4 1.5 8.5 6 4 10.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
+      </div>
+    </div>
+    <div class="dock-side">
+      <button class="today-btn plate" id="today-btn" data-today="1">Today</button>
+    </div>
   </div>
 
-  <!-- Date pill → calendar -->
-  <div class="date-card" id="date-card" data-open="0">
-    <button class="date-pill" id="date-pill" aria-expanded="false">
-      <span class="dp-text">
-        <span class="dp-weekday" id="dp-weekday"></span>
-        <span class="dp-main" id="dp-main"></span>
-      </span>
-      <span class="dp-year" id="dp-year"></span>
-      <span class="dp-chev" id="dp-chev"></span>
-    </button>
-    <div class="cal" id="cal" aria-hidden="true"></div>
-  </div>
+  <!-- mini calendar -->
+  <div class="mini-cal plate" id="mini-cal" data-open="0" aria-hidden="true"></div>
 
   <script>
   (async () => {
@@ -278,27 +326,13 @@
       tj.azimuth_min_deg, tj.azimuth_max_deg, tj.azimuth_step_deg,
     );
 
-    // The "non-visible" base polygon (scripts/build_us_polygons.py): US land
-    // (Alaska excluded) minus the Processing Boxes minus OSM ocean water — the
-    // same water-polygons dataset the engine's ocean mask uses. That gives the
-    // fill the exact semantics of a tile pixel: everything in the US that is
-    // not ocean water is land, so lakes, rivers, and Delta channels outside
-    // the boxes read "non-visible" just as they would inside.
-    //
-    // It is NOT drawn as a vector layer. It is rasterized onto each Visibility
-    // Tile's own pixel grid (fill_mask.js) so uncovered US land is painted by
-    // the same raster as the computed tiles: a separate translucent fill layer
-    // can never butt-join the tile edge exactly — the OR-downsampled pyramid
-    // dilates coverage by up to a pixel per zoom, and any overlap (or gap)
-    // between two layers renders as a dark (or light) line tracing every box.
-    // In one raster, overlap is just black. Optional: a missing/bad file drops
-    // the mask and the outside-box verdict; the computed map still works.
+    // Fill polygon: US land minus boxes minus ocean, rasterized per tile onto
+    // the visibility raster itself. See index.html for the seam rationale.
     const fillGeo = await fetch('us_land_fill.geojson')
       .then((r) => (r.ok ? r.json() : null))
       .catch(() => null);
     const fillPolys = fillGeo?.features?.[0]?.geometry?.coordinates ?? null;
     const fillMasker = fillPolys ? createFillMasker(fillPolys) : null;
-    // Geometry masks per tile URL — independent of the recolor version.
     const maskCache = new Map();
     function maskForTileUrl(tileUrl) {
       if (!fillMasker) return null;
@@ -309,8 +343,6 @@
       return mask;
     }
 
-    // Ray-cast point-in-polygon over the fill MultiPolygon (outer ring minus
-    // holes). lng=x, lat=y.
     function pointInRing(x, y, ring) {
       let inside = false;
       for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
@@ -334,28 +366,27 @@
       return false;
     }
 
-    // Local "today" as YYYY-MM-DD, from local calendar components. Never
-    // toISOString(): that yields the UTC date and can be a day ahead for
-    // evening West Coast users.
+    // Local calendar date → YYYY-MM-DD (never toISOString: UTC skew).
     function dateToValue(d) {
       const y = d.getFullYear();
       const m = String(d.getMonth() + 1).padStart(2, '0');
       const day = String(d.getDate()).padStart(2, '0');
       return `${y}-${m}-${day}`;
     }
-
-    // Parse a YYYY-MM-DD value and latitude into the visibility bit index for
-    // the date's sunset azimuth (null if the azimuth falls outside the window).
     function bitIndexForDate(dateValue, lat) {
       const [y, m, d] = dateValue.split('-').map(Number);
       return layout.azimuthToBitIndex(sunsetAzimuth(y, m, d, lat));
+    }
+    function sameDay(a, b) {
+      return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth()
+        && a.getDate() === b.getDate();
     }
 
     const INITIAL_CENTER = [-122.5, 37.85];
     let currentDate = new Date();
     let currentBitIndex = bitIndexForDate(dateToValue(currentDate), INITIAL_CENTER[1]);
 
-    // Transparent 1×1 PNG for tiles that do not exist in the pyramid.
+    // ─── Visibility tile protocol (identical mechanics to index.html) ──────
     const EMPTY_TILE = (() => {
       const b64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=';
       const bin = atob(b64);
@@ -363,11 +394,8 @@
       for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
       return arr.buffer;
     })();
-
-    // In-memory cache: tile URL → { tileSize, bytesPerPixel, raw: Uint8Array }
     const rawCache = new Map();
 
-    // Decompress a gzip-compressed ArrayBuffer (tiles are stored gzip'd).
     async function decompressGzip(buffer) {
       const ds = new DecompressionStream('gzip');
       const stream = new ReadableStream({
@@ -376,13 +404,6 @@
       return new Uint8Array(await new Response(stream).arrayBuffer());
     }
 
-    // Colorize a tile for the current bit index. Computed pixels (flag set)
-    // keep the tiles' precise verdicts and coast (the engine's OSM ocean
-    // mask): water transparent, land white (visible) or black (blocked).
-    // Transparent pixels fall through to the geometry mask, which paints
-    // uncovered US land black in the SAME raster — inside the boxes the mask
-    // is a hole, so tile data stays authoritative there. Either input may be
-    // null (a synthesized tile has no raw bytes; abroad/ocean has no mask).
     function applyBitmask(raw, mask, tileSize, bytesPerPixel, bitIndex) {
       const out = new Uint8ClampedArray(tileSize * tileSize * 4);
       const { flagBitIndex } = layout;
@@ -401,11 +422,6 @@
       return out;
     }
 
-    // Custom protocol: fetch raw .bin Visibility Tiles (gzip-compressed),
-    // cache decompressed bytes, then colorize per the current bit index. A
-    // tile absent from the pyramid is synthesized from the geometry mask, so
-    // the one raster paints uncovered US land black everywhere — no second
-    // layer, no seam at box or coverage edges.
     maplibregl.addProtocol('visibility', async (params) => {
       const tileUrl = params.url.replace('visibility://', '').split('?')[0];
 
@@ -418,8 +434,9 @@
 
         cached = { tileSize: tj.tile_size, bytesPerPixel: tj.bytes_per_pixel, raw, mask };
         rawCache.set(tileUrl, cached);
-        // A freshly-loaded tile may now cover the open Observer — refresh verdict.
-        if (infoOpen) renderPanel();
+        // A fresh tile may cover the open spot: refresh verdict AND the
+        // rail's per-day strip (both sample the cache).
+        if (spotOpen) { renderPlate(); drawRail(); }
       }
 
       const { tileSize, bytesPerPixel, raw, mask } = cached;
@@ -431,21 +448,10 @@
       return { data: await blob.arrayBuffer() };
     });
 
-    // Self-contained vector basemap: PMTiles read directly from a single local
-    // file via HTTP range requests (no tile server). The protocol resolves
-    // `pmtiles://…` source/tile URLs against the vendored basemap.pmtiles.
+    // Self-contained vector basemap (PMTiles over HTTP range requests).
     const pmtilesProtocol = new pmtiles.Protocol();
     maplibregl.addProtocol('pmtiles', pmtilesProtocol.tile);
     const BASEMAP_URL = new URL('basemap/basemap.pmtiles', location.href).href;
-
-    // Register the archive with the protocol so its single HTTP-range reader is
-    // reused, then read the basemap's coverage rectangle straight from the
-    // PMTiles header. The map is clamped to this rectangle (maxBounds, below) so
-    // the user can never pan or zoom to reveal an area the basemap doesn't tile
-    // — no bare background outside coverage. Reading it from the archive keeps
-    // the clamp in sync automatically when the basemap is re-extracted to a
-    // wider bbox (the basemap is the outermost tile layer: the visibility
-    // overlay only ever covers a sub-region of it).
     const basemapArchive = new pmtiles.PMTiles(BASEMAP_URL);
     pmtilesProtocol.add(basemapArchive);
     const bmHeader = await basemapArchive.getHeader();
@@ -454,30 +460,11 @@
       [bmHeader.maxLon, bmHeader.maxLat],
     ];
 
-    // The Protomaps "light" theme layers are authored against a source named
-    // "basemap"; keep the key in sync. Drop the visibility overlay in just
-    // below the first label (symbol) layer so place names stay legible on top.
     const themeLayers = window.PROTOMAPS_THEME_LAYERS;
 
-    // --- Basemap style overrides --------------------------------------------
-    // The stock Protomaps "light" flavor is close in structure (white roads,
-    // gray casings) but (a) reads as "not Google" via teal water, grayish land
-    // and white highways, and (b) renders labels/trails so faintly that its
-    // text seems to "float" and its detail vanishes next to the old OSM raster
-    // tiles. We retarget the relevant layers by id: a Google-alike palette,
-    // plus label halos matched to land/water (so text seats into the map like
-    // baked-in raster labels instead of floating), dashed earthy trails, and a
-    // broader POI whitelist. Applied as an override pass (not baked into the
-    // generated basemap_theme.js) so a future theme regeneration doesn't
-    // clobber it. Each entry may set `paint`, `layout`, and/or `filter`.
-    //
-    // NOTE: the tiles cap at z14 (see basemap.pmtiles), so deep-zoom richness
-    // that the OSM raster had at z15-19 can't be recovered here without
-    // re-extracting the PMTiles at a higher maxzoom (or reverting to raster).
-    const LAND = '#f2efe9';   // warm off-white land
-    const WATER = '#aadaff';  // pale sky-blue water
-    // POIs worth surfacing for an outdoor/coastal app; each POI carries its own
-    // min_zoom, so low-importance kinds stay hidden until you zoom in.
+    // Basemap style overrides — identical to index.html.
+    const LAND = '#f2efe9';
+    const WATER = '#aadaff';
     const POI_KINDS = [
       'beach', 'forest', 'marina', 'park', 'peak', 'zoo', 'garden', 'bench',
       'aerodrome', 'station', 'bus_stop', 'ferry_terminal', 'stadium',
@@ -488,28 +475,21 @@
       'theatre', 'cinema', 'castle',
     ];
     const OVERRIDES = {
-      // Palette
       background: { paint: { 'background-color': LAND } },
       earth: { paint: { 'fill-color': LAND } },
       water: { paint: { 'fill-color': WATER } },
       water_stream: { paint: { 'line-color': WATER } },
       water_river: { paint: { 'line-color': WATER } },
-      landuse_park: { paint: { 'fill-color': '#c8e6c9' } },        // soft park green
+      landuse_park: { paint: { 'fill-color': '#c8e6c9' } },
       landuse_urban_green: { paint: { 'fill-color': '#c8e6c9' } },
-      buildings: { paint: { 'fill-color': '#eeeae1' } },           // light gray-beige
-      // Signature Google touch: highways in yellow with an amber casing.
+      buildings: { paint: { 'fill-color': '#eeeae1' } },
       roads_highway: { paint: { 'line-color': '#f9d488' } },
       roads_bridges_highway: { paint: { 'line-color': '#f9d488' } },
       roads_highway_casing_early: { paint: { 'line-color': '#f2b872' } },
       roads_highway_casing_late: { paint: { 'line-color': '#f2b872' } },
       roads_bridges_highway_casing: { paint: { 'line-color': '#f2b872' } },
-      // Trails: give paths (kind=path, styled by roads_other) an OSM-Carto-ish
-      // dashed, terracotta stroke so park/coast trails read as trails.
       roads_other: { paint: { 'line-color': '#c58f6e', 'line-dasharray': [3, 2] } },
       roads_bridges_other: { paint: { 'line-color': '#c58f6e', 'line-dasharray': [3, 2] } },
-      // Labels: seat text into the map. A land/water-matched halo with a little
-      // blur (instead of a hard white outline) plus warmer, OSM-ish text colors
-      // stops the "floating" look.
       places_locality: { paint: { 'text-color': '#4c4641', 'text-halo-color': LAND, 'text-halo-width': 1.5, 'text-halo-blur': 0.6 } },
       places_subplace: { paint: { 'text-color': '#6f6862', 'text-halo-color': LAND, 'text-halo-width': 1.4, 'text-halo-blur': 0.6 } },
       places_region: { paint: { 'text-halo-color': LAND, 'text-halo-blur': 0.6 } },
@@ -519,14 +499,8 @@
       water_label_ocean: { paint: { 'text-color': '#5a7bb5', 'text-halo-color': WATER, 'text-halo-blur': 0.5 } },
       water_label_lakes: { paint: { 'text-color': '#5a7bb5', 'text-halo-color': WATER, 'text-halo-blur': 0.5 } },
       water_waterway_label: { paint: { 'text-color': '#5a7bb5', 'text-halo-color': WATER, 'text-halo-blur': 0.5 } },
-      // Show more POIs and give their labels a land-matched halo too.
       pois: {
         paint: {
-          // The stock POI color only assigns real colors to nature/transit/civic
-          // kinds and lets everything else fall through to a near-white default
-          // (#e2dfda) that was ~invisible in the stock theme. Since we broadened
-          // POI_KINDS, that default surfaced as unreadable labels (e.g. parking).
-          // Keep the categorized colors, but give the fallback a readable dark.
           'text-color': ['case',
             ['in', ['get', 'kind'], ['literal', ['beach', 'forest', 'marina', 'park', 'peak', 'zoo', 'garden', 'bench']]], '#20834D',
             ['in', ['get', 'kind'], ['literal', ['aerodrome', 'station', 'bus_stop', 'ferry_terminal', 'parking']]], '#315BCF',
@@ -551,25 +525,17 @@
       if (o.filter) layer.filter = o.filter;
     }
     const firstSymbolIdx = themeLayers.findIndex((l) => l.type === 'symbol');
-    // The single overlay: computed verdicts AND the uncovered-US black are
-    // both painted by this raster (see applyBitmask / the protocol), just
-    // below the first label layer so place names stay legible on top.
+    const firstSymbolId = firstSymbolIdx === -1 ? undefined : themeLayers[firstSymbolIdx].id;
     const visibilityLayer = {
       id: 'visibility',
       type: 'raster',
       source: 'visibility',
-      // 'nearest' keeps the visibility cells crisp (the data is a per-cell
-      // bitmask; interpolation would imply resolution it doesn't have).
       paint: { 'raster-opacity': 0.4, 'raster-resampling': 'nearest' },
     };
     const layers = firstSymbolIdx === -1
       ? [...themeLayers, visibilityLayer]
       : [...themeLayers.slice(0, firstSymbolIdx), visibilityLayer, ...themeLayers.slice(firstSymbolIdx)];
 
-    // Directory of the current page (no query/hash). Used to build absolute
-    // asset URLs; note the glyphs template must keep its literal {fontstack}
-    // and {range} tokens, so it is NOT run through `new URL()` (which would
-    // percent-encode the braces and break glyph loading).
     const BASE_URL = location.origin + location.pathname.replace(/[^/]*$/, '');
 
     const map = new maplibregl.Map({
@@ -590,9 +556,6 @@
             tileSize: tj.tile_size,
             minzoom: tj.minzoom,
             maxzoom: tj.maxzoom,
-            // Deliberately unbounded: outside the pyramid the protocol
-            // synthesizes tiles from the geometry mask, so uncovered US land
-            // is black with no seam at the coverage rectangle's edge.
             attribution: 'Sunset Visibility, USGS DEM',
           },
         },
@@ -600,46 +563,31 @@
       },
       center: INITIAL_CENTER,
       zoom: 11,
-      // Floor only: below the pyramid's minzoom the overlay vanishes and the
-      // basemap falls apart. Zooming IN past maxzoom is fine — the raster
-      // overzooms its deepest tiles (crisp nearest-neighbour cells) and the
-      // vector basemap overzooms natively, so no ceiling is set.
       minZoom: tj.minzoom,
-      // Clamp panning AND zoom-out to the basemap's coverage rectangle so no
-      // untiled background is ever reachable. MapLibre also derives an implicit
-      // minimum zoom from these bounds and the viewport size (you can't zoom out
-      // past the point where the rectangle fills the window), which is the
-      // binding constraint above the tj.minzoom floor.
       maxBounds: basemapBounds,
-      attributionControl: { compact: true },   // collapse to the (i) button by default
+      attributionControl: { compact: true },
     });
 
     // --- Recolorization Controller ----------------------------------------
     let recolorVersion = 0;
     function applyAzimuth(bitIndex) {
-      if (bitIndex === currentBitIndex) return;   // no change → no rework, no fetch
+      if (bitIndex === currentBitIndex) return;
       currentBitIndex = bitIndex;
       const source = map.getSource('visibility');
       if (!source) return;
       recolorVersion++;
       source.setTiles([`visibility://tiles/{z}/{x}/{y}.bin?v=${recolorVersion}`]);
     }
-
-    // Recompute the visibility bit index from the Selected date and the map center.
     function recolorizeFromInputs() {
       applyAzimuth(bitIndexForDate(dateToValue(currentDate), map.getCenter().lat));
     }
 
-    // ═══ Visibility verdict sampling (Selected Observer → cached tile) ══════
-    // Map a lng/lat to global Web-Mercator tile coordinates at zoom z.
+    // ═══ Verdict sampling ════════════════════════════════════════════════════
     function lngToTileX(lng, z) { return ((lng + 180) / 360) * (2 ** z); }
     function latToTileY(lat, z) {
       const s = Math.sin((lat * Math.PI) / 180);
       return (0.5 - Math.log((1 + s) / (1 - s)) / (4 * Math.PI)) * (2 ** z);
     }
-
-    // Return the raw pixel bytes for a lat/lng from whatever cached .bin tile
-    // covers it, preferring the highest-resolution (largest z) hit.
     function sampleVisibility(lat, lng) {
       const zs = new Set();
       for (const url of rawCache.keys()) {
@@ -651,7 +599,7 @@
         const gy = latToTileY(lat, z);
         const x = Math.floor(gx), y = Math.floor(gy);
         const tile = rawCache.get(`tiles/${z}/${x}/${y}.bin`);
-        if (!tile || !tile.raw) continue; // synthesized tiles carry no data
+        if (!tile || !tile.raw) continue;
         const { tileSize, bytesPerPixel, raw } = tile;
         const px = Math.min(tileSize - 1, Math.floor((gx - x) * tileSize));
         const py = Math.min(tileSize - 1, Math.floor((gy - y) * tileSize));
@@ -660,23 +608,20 @@
       }
       return null;
     }
-
-    // 'Visible' / 'Blocked' for a land pixel; null for ocean / outside the US.
+    // true / false for a computed land pixel at a bit index; null = no verdict.
+    function pixelVisibleAt(pixelBytes, bitIndex) {
+      if (!pixelBytes || bitIndex == null) return null;
+      const rgba = colorizeBitmaskPixel(pixelBytes, layout.flagBitIndex, bitIndex);
+      if (rgba[3] === 0) return null;
+      return rgba[0] === 255;
+    }
     function visibilityVerdict(lat, lng) {
-      const pixelBytes = sampleVisibility(lat, lng);
-      if (pixelBytes) {
-        const rgba = colorizeBitmaskPixel(pixelBytes, layout.flagBitIndex, currentBitIndex);
-        if (rgba[3] !== 0) return rgba[0] === 255 ? 'Visible' : 'Blocked';
-      }
-      // No tile here, or a transparent pixel — which is either engine ocean
-      // (inside a box) or the uncovered margin of an edge tile (outside every
-      // box). The fill polygon tells them apart with tile semantics: US land
-      // or inland water is non-visible; ocean water and anywhere outside the
-      // US (the boxes are holes in the fill) get no verdict.
+      const v = pixelVisibleAt(sampleVisibility(lat, lng), currentBitIndex);
+      if (v !== null) return v ? 'Visible' : 'Blocked';
       return pointInFill(lng, lat) ? 'Blocked' : null;
     }
 
-    // ═══ Sun almanac helpers (SunCalc; azimuth from the project module) ═════
+    // ═══ Sun almanac ═════════════════════════════════════════════════════════
     const SUN_TZ = 'America/Los_Angeles';
     function fmtTime(d) {
       if (!d || isNaN(d.getTime())) return '—';
@@ -692,268 +637,464 @@
     }
     const COMPASS = ['N','NNE','NE','ENE','E','ESE','SE','SSE','S','SSW','SW','WSW','W','WNW','NW','NNW'];
     function compass(deg) { return COMPASS[Math.round(deg / 22.5) % 16]; }
-    function fmtLat(lat) { return `${Math.abs(lat).toFixed(4)}° ${lat >= 0 ? 'N' : 'S'}`; }
-    function fmtLon(lon) { return `${Math.abs(lon).toFixed(4)}° ${lon >= 0 ? 'E' : 'W'}`; }
+    function fmtLat(lat) { return `${lat.toFixed(4)}° ${lat >= 0 ? 'N' : 'S'}`; }
+    function fmtLon(lon) { return `${lon.toFixed(4)}° ${lon >= 0 ? 'E' : 'W'}`; }
 
     function computeSun(date, lat, lng) {
-      const times = SunCalc.getTimes(date, lat, lng);
-      const sunset = times.sunset, sunrise = times.sunrise, noon = times.solarNoon;
-      // Azimuth from the project's own module — the one that drives the overlay
-      // encoding — so the number shown matches the visibility verdict.
+      // Evaluate SunCalc at local noon: a local-midnight Date can round to the
+      // PREVIOUS solar day at West Coast longitudes (off-by-one sunset times).
+      const noon = new Date(date.getFullYear(), date.getMonth(), date.getDate(), 12);
+      const times = SunCalc.getTimes(noon, lat, lng);
       const az = sunsetAzimuth(date.getFullYear(), date.getMonth() + 1, date.getDate(), lat);
       return {
-        culmination: fmtTime(noon),
-        sunset: fmtTime(sunset),
-        daylight: fmtDuration(sunset - sunrise),
+        sunset: fmtTime(times.sunset),
+        golden: fmtTime(times.goldenHour),
+        daylight: fmtDuration(times.sunset - times.sunrise),
         azimuth: isFinite(az) ? `${Math.round(az)}° ${compass(az)}` : '—',
       };
     }
 
-    const FIELD_INFO = {
-      visibility: "Whether this observer can see the sun touch the Pacific Ocean horizon on the selected date — an unobstructed line of sight west along the sunset azimuth. 'Blocked' means terrain hides it.",
-      culmination: 'Solar noon — the instant the sun reaches its highest point in the sky. It sits exactly halfway between sunrise and sunset.',
-      sunset: 'The clock time the sun reaches the geometric horizon (from SunCalc). This is an astronomical time only — it does not mean the sunset is actually visible from here.',
-      daylight: 'Total time the sun spends above the horizon today, measured from sunrise to sunset.',
-      azimuth: 'The compass bearing of the sun as it sets, measured clockwise from true north — exactly where on the horizon it drops.',
-    };
-
-    // ═══ Floating-chrome state + rendering (vanilla) ════════════════════════
-    const CHEVRON = (cls = '') =>
-      `<svg class="${cls}" viewBox="0 0 16 16" width="13" height="13" aria-hidden="true">` +
-      `<path d="M3.5 10.5 8 6l4.5 4.5" fill="none" stroke="currentColor" stroke-width="1.8" ` +
-      `stroke-linecap="round" stroke-linejoin="round"/></svg>`;
-
-    const WEEKDAYS = ['S', 'M', 'T', 'W', 'T', 'F', 'S'];
-    const MONTHS = ['January','February','March','April','May','June','July',
-      'August','September','October','November','December'];
-    function sameDay(a, b) {
-      return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth()
-        && a.getDate() === b.getDate();
+    // ═══ Sunset-direction ray (map layer) ════════════════════════════════════
+    function destPoint(lat, lng, bearingDeg, distKm) {
+      const R = 6371, d = distKm / R;
+      const br = (bearingDeg * Math.PI) / 180;
+      const la1 = (lat * Math.PI) / 180, lo1 = (lng * Math.PI) / 180;
+      const la2 = Math.asin(Math.sin(la1) * Math.cos(d) +
+        Math.cos(la1) * Math.sin(d) * Math.cos(br));
+      const lo2 = lo1 + Math.atan2(Math.sin(br) * Math.sin(d) * Math.cos(la1),
+        Math.cos(d) - Math.sin(la1) * Math.sin(la2));
+      return [(lo2 * 180) / Math.PI, (la2 * 180) / Math.PI];
+    }
+    const EMPTY_FC = { type: 'FeatureCollection', features: [] };
+    function updateRay() {
+      const src = map.getSource('sunray');
+      if (!src) return;
+      if (!spotOpen || !spot) { src.setData(EMPTY_FC); return; }
+      const az = sunsetAzimuth(currentDate.getFullYear(), currentDate.getMonth() + 1,
+        currentDate.getDate(), spot.lat);
+      if (!isFinite(az)) { src.setData(EMPTY_FC); return; }
+      const end = destPoint(spot.lat, spot.lng, az, 140);
+      src.setData({
+        type: 'FeatureCollection',
+        features: [{
+          type: 'Feature',
+          geometry: { type: 'LineString', coordinates: [[spot.lng, spot.lat], end] },
+          properties: {},
+        }],
+      });
     }
 
-    let cursor = { lat: INITIAL_CENTER[1], lng: INITIAL_CENTER[0] };
-    let infoOpen = false;
-    let saved = null;                                   // Selected Observer { lat, lng } | null
-    let calOpen = false;
-    let calView = { y: currentDate.getFullYear(), m: currentDate.getMonth() };
-    let calDir = 0;
+    // ═══ Spot plate ══════════════════════════════════════════════════════════
+    const spotPlate = document.getElementById('spot-plate');
+    const spCoords = document.getElementById('sp-coords');
+    const spVerdict = document.getElementById('sp-verdict');
+    const spRows = document.getElementById('sp-rows');
 
-    const infoCard  = document.getElementById('info-card');
-    const infoPanel = document.getElementById('info-panel');
-    const infoFields = document.getElementById('info-fields');
-    const ipCoords  = document.getElementById('ip-coords');
-    const llPill    = document.getElementById('ll-pill');
-    const llLat     = document.getElementById('ll-lat');
-    const llLon     = document.getElementById('ll-lon');
-    document.getElementById('ll-chev').innerHTML = CHEVRON();
-    document.getElementById('dp-chev').innerHTML = CHEVRON();
+    let spotOpen = false;
+    let spot = null;
 
-    const dateCard  = document.getElementById('date-card');
-    const datePill  = document.getElementById('date-pill');
-    const dpWeekday = document.getElementById('dp-weekday');
-    const dpMain    = document.getElementById('dp-main');
-    const dpYear    = document.getElementById('dp-year');
-    const calEl     = document.getElementById('cal');
-
-    // sun marker (MapLibre marker reusing the design's pulsing element)
     const markerEl = document.createElement('div');
-    markerEl.className = 'sun-marker';
-    markerEl.innerHTML = '<span class="sm-core"></span><span class="sm-ring"></span>';
-    // Added to the map only while a point is selected — MapLibre's Marker resets
-    // the element's inline opacity on every update, so add/remove (not opacity)
-    // is what reliably keeps the ping hidden until a click.
+    markerEl.className = 'spot-marker';
+    markerEl.innerHTML = '<span class="spm-core"></span><span class="spm-ring"></span>';
     const marker = new maplibregl.Marker({ element: markerEl, anchor: 'center' });
     let markerOnMap = false;
 
-    function renderPillCoords() {
-      const p = infoOpen && saved ? saved : cursor;
-      llLat.textContent = fmtLat(p.lat);
-      llLon.textContent = fmtLon(p.lng);
-    }
+    const VERDICT_COPY = {
+      Visible: 'Clear view to the horizon',
+      Blocked: 'Terrain blocks the view',
+      none: 'Open water — no lookout here',
+    };
 
-    function renderPanel() {
-      if (!saved) return;
-      ipCoords.textContent = `${fmtLat(saved.lat)} · ${fmtLon(saved.lng)}`;
-      const sun = computeSun(currentDate, saved.lat, saved.lng);
-      const verdict = visibilityVerdict(saved.lat, saved.lng);
+    function renderPlate() {
+      if (!spot) return;
+      spCoords.textContent = `${fmtLat(spot.lat)} · ${fmtLon(spot.lng)}`;
+      const verdict = visibilityVerdict(spot.lat, spot.lng);
+      spotPlate.dataset.verdict = verdict ? verdict.toLowerCase() : 'none';
+      spVerdict.textContent = VERDICT_COPY[verdict ?? 'none'];
 
-      const fields = [];
-      if (verdict) fields.push(['Visibility', verdict, 'visibility', verdict.toLowerCase()]);
-      fields.push(['Culmination', sun.culmination, 'culmination']);
-      fields.push(['Sunset', sun.sunset, 'sunset']);
-      fields.push(['Daylight', sun.daylight, 'daylight']);
-      fields.push(['Azimuth', sun.azimuth, 'azimuth']);
-
-      infoFields.innerHTML = fields.map(([label, value, key, verdictClass]) => `
-        <div class="info-field" tabindex="0"${verdictClass ? ` data-verdict="${verdictClass}"` : ''}>
-          <span class="if-label serif">${label}</span>
-          <span class="if-value">${value}</span>
-          <div class="if-tip"><span class="if-tip-term serif">${label}</span>${FIELD_INFO[key]}</div>
+      const sun = computeSun(currentDate, spot.lat, spot.lng);
+      spRows.innerHTML = [
+        ['Sunset', sun.sunset],
+        ['Golden hour', sun.golden],
+        ['Sets toward', sun.azimuth],
+        ['Daylight', sun.daylight],
+      ].map(([k, v]) => `
+        <div class="sp-row">
+          <span class="sp-key">${k}</span>
+          <span class="sp-val">${v}</span>
         </div>`).join('');
     }
 
     function updateMarker() {
-      if (infoOpen && saved) {
-        marker.setLngLat([saved.lng, saved.lat]);   // moves on each new selection
+      if (spotOpen && spot) {
+        marker.setLngLat([spot.lng, spot.lat]);
         if (!markerOnMap) { marker.addTo(map); markerOnMap = true; }
       } else if (markerOnMap) {
-        marker.remove();                             // gone once the tab closes
+        marker.remove();
         markerOnMap = false;
       }
     }
-
-    function openInfoAt(pt) {
-      saved = { lat: pt.lat, lng: pt.lng };
-      infoOpen = true;
-      infoCard.dataset.open = '1';
-      llPill.setAttribute('aria-expanded', 'true');
-      infoPanel.setAttribute('aria-hidden', 'false');
-      renderPanel();
-      renderPillCoords();
+    function openSpot(pt) {
+      spot = { lat: pt.lat, lng: pt.lng };
+      spotOpen = true;
+      spotPlate.dataset.open = '1';
+      spotPlate.setAttribute('aria-hidden', 'false');
+      renderPlate();
       updateMarker();
+      updateRay();
+      drawRail();                       // the rail gains this spot's day strip
     }
-    function closeInfo() {
-      infoOpen = false;
-      saved = null;                                     // temp save discarded on close
-      infoCard.dataset.open = '0';
-      llPill.setAttribute('aria-expanded', 'false');
-      infoPanel.setAttribute('aria-hidden', 'true');
+    function closeSpot() {
+      spotOpen = false;
+      spot = null;
+      spotPlate.dataset.open = '0';
+      spotPlate.setAttribute('aria-hidden', 'true');
       updateMarker();
-      renderPillCoords();
+      updateRay();
+      drawRail();                       // strip off, caption back to default
+    }
+    document.getElementById('sp-close').addEventListener('click', closeSpot);
+
+    // ═══ Year rail (from alt) + per-day spot strip (from alt2) ══════════════
+    const rail = document.getElementById('rail');
+    const railSvg = document.getElementById('rail-svg');
+    const railCap = document.getElementById('rail-cap');
+    const knob = document.getElementById('knob');
+    const dcWk = document.getElementById('dc-wk');
+    const dcDate = document.getElementById('dc-date');
+    const dcYr = document.getElementById('dc-yr');
+    const todayBtn = document.getElementById('today-btn');
+
+    function daysInYear(y) { return (new Date(y, 11, 31) - new Date(y, 0, 0)) / 86400000; }
+    function dayOfYear(d) { return Math.round((d - new Date(d.getFullYear(), 0, 0)) / 86400000); }
+    function dateFromDoy(y, doy) { return new Date(y, 0, doy); }
+
+    const RAIL_W = 1000, RAIL_H = 64;
+    const CURVE_TOP = 6, CURVE_BOT = 34;      // azimuth curve band
+    const STRIP_Y = 39, STRIP_H = 9;          // per-day visibility band
+    const CAP_DEFAULT = 'Drag the sun to pick a date';
+    const CAP_STRIP = 'Horizon sunsets here — colored days reach the horizon, tap to preview';
+
+    function drawRail() {
+      const y = currentDate.getFullYear();
+      const days = daysInYear(y);
+      const lat = map ? map.getCenter().lat : INITIAL_CENTER[1];
+      const xFor = (doy) => ((doy - 1) / (days - 1)) * RAIL_W;
+
+      // The year's sunset-azimuth curve at the map-center latitude — the same
+      // function that drives the overlay encoding.
+      const pts = [];
+      let minAz = Infinity, maxAz = -Infinity;
+      for (let doy = 1; doy <= days; doy += 4) {
+        const d = dateFromDoy(y, doy);
+        const az = sunsetAzimuth(y, d.getMonth() + 1, d.getDate(), lat);
+        if (!isFinite(az)) continue;
+        pts.push([doy, az]);
+        if (az < minAz) minAz = az;
+        if (az > maxAz) maxAz = az;
+      }
+      const yFor = (az) => CURVE_BOT - ((az - minAz) / (maxAz - minAz || 1)) * (CURVE_BOT - CURVE_TOP);
+      const poly = pts.map(([doy, az]) => `${xFor(doy).toFixed(1)},${yFor(az).toFixed(1)}`).join(' ');
+      const area = `${xFor(pts[0][0]).toFixed(1)},${CURVE_BOT} ` + poly +
+        ` ${xFor(pts[pts.length - 1][0]).toFixed(1)},${CURVE_BOT}`;
+
+      // Season ticks: equinoxes and solstices (fixed civil dates are close
+      // enough at this width).
+      const seasons = [
+        [dayOfYear(new Date(y, 2, 20)), 'EQX'],
+        [dayOfYear(new Date(y, 5, 20)), 'SOL'],
+        [dayOfYear(new Date(y, 8, 22)), 'EQX'],
+        [dayOfYear(new Date(y, 11, 21)), 'SOL'],
+      ];
+      const months = Array.from({ length: 12 }, (_, m) => {
+        const mid = dayOfYear(new Date(y, m, 15));
+        return `<text class="month" x="${xFor(mid).toFixed(1)}" y="${RAIL_H - 4}">` +
+          'JFMAMJJASOND'[m] + '</text>';
+      }).join('');
+
+      const today = new Date();
+      const todayLine = today.getFullYear() === y
+        ? `<line class="today-mark" x1="${xFor(dayOfYear(today)).toFixed(1)}" y1="${CURVE_TOP}"` +
+          ` x2="${xFor(dayOfYear(today)).toFixed(1)}" y2="${STRIP_Y + STRIP_H + 1}"/>`
+        : '';
+
+      // Per-day visibility strip for the selected spot (the pixel's bitmask
+      // already holds every azimuth — a whole year is 365 cheap bit reads).
+      // Fill-covered land (no computed tile) is honestly all-blocked; open
+      // water / abroad gets no strip at all.
+      let strip = '';
+      let stripDays = 0;
+      if (spotOpen && spot) {
+        const pixel = sampleVisibility(spot.lat, spot.lng);
+        const landNoData = !pixel && pointInFill(spot.lng, spot.lat);
+        if (pixel || landNoData) {
+          const w = RAIL_W / days;
+          for (let doy = 1; doy <= days; doy++) {
+            let cls = 'day-b';
+            if (pixel) {
+              const d = dateFromDoy(y, doy);
+              const bi = layout.azimuthToBitIndex(
+                sunsetAzimuth(y, d.getMonth() + 1, d.getDate(), spot.lat));
+              const v = pixelVisibleAt(pixel, bi);
+              if (v === null) continue;           // water pixel / outside window
+              cls = v ? 'day-v' : 'day-b';
+            }
+            stripDays++;
+            strip += `<rect class="${cls}" x="${((doy - 1) * w).toFixed(1)}" y="${STRIP_Y}"` +
+              ` width="${(w + 0.3).toFixed(1)}" height="${STRIP_H}"/>`;
+          }
+        }
+      }
+      // An engine-water pixel emits zero day rects — no band, default caption.
+      const hasStrip = stripDays > 0;
+      railCap.textContent = hasStrip ? CAP_STRIP : CAP_DEFAULT;
+      railCap.dataset.strip = hasStrip ? '1' : '0';
+
+      railSvg.setAttribute('viewBox', `0 0 ${RAIL_W} ${RAIL_H}`);
+      railSvg.innerHTML = `
+        <defs>
+          <linearGradient id="railGlow" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0" stop-color="#d99a2b" stop-opacity=".3"/>
+            <stop offset="1" stop-color="#d99a2b" stop-opacity="0"/>
+          </linearGradient>
+        </defs>
+        <polygon class="az-fill" points="${area}"/>
+        <polyline class="az-curve" points="${poly}"/>
+        ${seasons.map(([doy, lbl]) =>
+          `<line class="tick" x1="${xFor(doy).toFixed(1)}" y1="${CURVE_TOP}" x2="${xFor(doy).toFixed(1)}" y2="${CURVE_BOT}"/>` +
+          `<text class="tick-label" x="${(xFor(doy) + 3).toFixed(1)}" y="${CURVE_TOP + 7}">${lbl}</text>`,
+        ).join('')}
+        ${strip}
+        ${todayLine}
+        ${months}`;
     }
 
-    llPill.addEventListener('click', () => {
-      if (infoOpen) closeInfo();
-      else openInfoAt(cursor);
+    function renderDate() {
+      dcWk.textContent = new Intl.DateTimeFormat('en-US', { weekday: 'long' }).format(currentDate);
+      dcDate.textContent = new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric' }).format(currentDate);
+      dcYr.textContent = currentDate.getFullYear();
+      const days = daysInYear(currentDate.getFullYear());
+      const doy = dayOfYear(currentDate);
+      knob.style.left = `${((doy - 1) / (days - 1)) * 100}%`;
+      rail.setAttribute('aria-valuemax', days);
+      rail.setAttribute('aria-valuenow', doy);
+      rail.setAttribute('aria-valuetext', new Intl.DateTimeFormat('en-US',
+        { month: 'long', day: 'numeric', year: 'numeric' }).format(currentDate));
+      todayBtn.dataset.today = sameDay(currentDate, new Date()) ? '1' : '0';
+    }
+
+    function selectDate(d, { redrawRail = false } = {}) {
+      const yearChanged = d.getFullYear() !== currentDate.getFullYear();
+      currentDate = d;
+      renderDate();
+      if (yearChanged || redrawRail) drawRail();
+      recolorizeFromInputs();
+      if (spotOpen) renderPlate();
+      updateRay();
+      renderMiniCal();
+    }
+
+    // drag / click on the rail
+    let dragging = false;
+    function railDateFromEvent(e) {
+      const rect = rail.getBoundingClientRect();
+      const frac = Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width));
+      const y = currentDate.getFullYear();
+      const days = daysInYear(y);
+      return dateFromDoy(y, 1 + Math.round(frac * (days - 1)));
+    }
+    rail.addEventListener('pointerdown', (e) => {
+      dragging = true;
+      rail.dataset.drag = '1';
+      rail.setPointerCapture(e.pointerId);
+      selectDate(railDateFromEvent(e));
+    });
+    rail.addEventListener('pointermove', (e) => {
+      if (!dragging) return;
+      const d = railDateFromEvent(e);
+      if (!sameDay(d, currentDate)) selectDate(d);
+    });
+    const endDrag = () => { dragging = false; rail.dataset.drag = '0'; };
+    rail.addEventListener('pointerup', endDrag);
+    rail.addEventListener('pointercancel', endDrag);
+
+    rail.addEventListener('keydown', (e) => {
+      const step = { ArrowLeft: -1, ArrowRight: 1, ArrowDown: -7, ArrowUp: 7 }[e.key];
+      if (!step) return;
+      e.preventDefault();
+      const d = new Date(currentDate);
+      d.setDate(d.getDate() + (e.shiftKey ? step * 7 : step));
+      selectDate(d);
     });
 
-    // --- Date picker ------------------------------------------------------
-    function renderDatePill() {
-      dpWeekday.textContent = new Intl.DateTimeFormat('en-US', { weekday: 'long' })
-        .format(currentDate).toUpperCase();
-      dpMain.textContent = new Intl.DateTimeFormat('en-US', { month: 'long', day: 'numeric' })
-        .format(currentDate);
-      dpYear.textContent = currentDate.getFullYear();
-    }
+    document.getElementById('step-back').addEventListener('click', () => {
+      const d = new Date(currentDate); d.setDate(d.getDate() - 1); selectDate(d);
+    });
+    document.getElementById('step-fwd').addEventListener('click', () => {
+      const d = new Date(currentDate); d.setDate(d.getDate() + 1); selectDate(d);
+    });
+    todayBtn.addEventListener('click', () => selectDate(new Date()));
 
-    function renderCal() {
+    // ═══ Mini calendar popover ═══════════════════════════════════════════════
+    const dateChip = document.getElementById('date-chip');
+    const miniCal = document.getElementById('mini-cal');
+    let calOpen = false;
+    let calView = { y: currentDate.getFullYear(), m: currentDate.getMonth() };
+    const MONTHS = ['January','February','March','April','May','June','July',
+      'August','September','October','November','December'];
+
+    function renderMiniCal() {
+      if (!calOpen) return;
       const { y, m } = calView;
       const first = new Date(y, m, 1).getDay();
-      const days = new Date(y, m + 1, 0).getDate();
+      const nDays = new Date(y, m + 1, 0).getDate();
       const today = new Date();
       let cells = '';
-      for (let i = 0; i < first; i++) cells += '<span class="cal-empty"></span>';
-      for (let d = 1; d <= days; d++) {
-        const cellDate = new Date(y, m, d);
-        const isSel = sameDay(cellDate, currentDate);
-        const isToday = sameDay(cellDate, today);
-        cells += `<button class="cal-day" data-d="${d}" ` +
-          `data-selected="${isSel ? '1' : '0'}" data-today="${isToday ? '1' : '0'}">${d}</button>`;
+      for (let i = 0; i < first; i++) cells += '<span class="mc-empty"></span>';
+      for (let d = 1; d <= nDays; d++) {
+        const cd = new Date(y, m, d);
+        cells += `<button class="mc-day" data-d="${d}"` +
+          ` data-selected="${sameDay(cd, currentDate) ? '1' : '0'}"` +
+          ` data-today="${sameDay(cd, today) ? '1' : '0'}">${d}</button>`;
       }
-      calEl.innerHTML = `
-        <div class="cal-head">
-          <button class="cal-nav" data-nav="-1" aria-label="Previous month">${CHEVRON('rot-l')}</button>
-          <div class="cal-title">${MONTHS[m]} <span class="cal-year">${y}</span></div>
-          <button class="cal-nav" data-nav="1" aria-label="Next month">${CHEVRON('rot-r')}</button>
+      miniCal.innerHTML = `
+        <div class="mc-head">
+          <button class="mc-nav" data-nav="-1" aria-label="Previous month">
+            <svg width="11" height="11" viewBox="0 0 12 12"><path d="M8 1.5 3.5 6 8 10.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </button>
+          <div class="mc-title">${MONTHS[m]} <span class="yr">${y}</span></div>
+          <button class="mc-nav" data-nav="1" aria-label="Next month">
+            <svg width="11" height="11" viewBox="0 0 12 12"><path d="M4 1.5 8.5 6 4 10.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </button>
         </div>
-        <div class="cal-week">${WEEKDAYS.map((d) => `<span>${d}</span>`).join('')}</div>
-        <div class="cal-grid-wrap">
-          <div class="cal-grid" data-dir="${calDir}">${cells}</div>
-        </div>`;
-      calDir = 0;
+        <div class="mc-week">${['S','M','T','W','T','F','S'].map((d) => `<span>${d}</span>`).join('')}</div>
+        <div class="mc-grid">${cells}</div>`;
     }
-
+    function positionMiniCal() {
+      const r = dateChip.getBoundingClientRect();
+      miniCal.style.left = `${Math.min(Math.max(10, r.left), window.innerWidth - 266)}px`;
+      miniCal.style.bottom = `${window.innerHeight - r.top + 10}px`;
+      miniCal.style.top = 'auto';
+    }
     function openCal() {
       calOpen = true;
       calView = { y: currentDate.getFullYear(), m: currentDate.getMonth() };
-      renderCal();
-      dateCard.dataset.open = '1';
-      datePill.setAttribute('aria-expanded', 'true');
-      calEl.setAttribute('aria-hidden', 'false');
+      renderMiniCal();
+      positionMiniCal();
+      miniCal.dataset.open = '1';
+      miniCal.setAttribute('aria-hidden', 'false');
+      dateChip.setAttribute('aria-expanded', 'true');
     }
     function closeCal() {
       calOpen = false;
-      dateCard.dataset.open = '0';
-      datePill.setAttribute('aria-expanded', 'false');
-      calEl.setAttribute('aria-hidden', 'true');
+      miniCal.dataset.open = '0';
+      miniCal.setAttribute('aria-hidden', 'true');
+      dateChip.setAttribute('aria-expanded', 'false');
     }
-
-    function selectDate(d) {
-      currentDate = d;
-      renderDatePill();
-      recolorizeFromInputs();           // re-colorize the overlay for the new azimuth
-      if (infoOpen) renderPanel();      // verdict + almanac depend on the date
-      closeCal();
-    }
-
-    datePill.addEventListener('click', () => { calOpen ? closeCal() : openCal(); });
-
-    calEl.addEventListener('click', (e) => {
-      const nav = e.target.closest('.cal-nav');
+    dateChip.addEventListener('click', () => (calOpen ? closeCal() : openCal()));
+    miniCal.addEventListener('click', (e) => {
+      const nav = e.target.closest('.mc-nav');
       if (nav) {
-        const n = Number(nav.dataset.nav);
-        calDir = n;
-        let mo = calView.m + n, yr = calView.y;
+        let mo = calView.m + Number(nav.dataset.nav), yr = calView.y;
         if (mo < 0) { mo = 11; yr--; }
         if (mo > 11) { mo = 0; yr++; }
         calView = { y: yr, m: mo };
-        renderCal();
+        renderMiniCal();
         return;
       }
-      const day = e.target.closest('.cal-day');
-      if (day) selectDate(new Date(calView.y, calView.m, Number(day.dataset.d)));
+      const day = e.target.closest('.mc-day');
+      if (day) {
+        selectDate(new Date(calView.y, calView.m, Number(day.dataset.d)));
+        closeCal();
+      }
     });
-
-    // outside-click closes the calendar (the info panel closes only via pill/Esc)
     document.addEventListener('mousedown', (e) => {
-      if (calOpen && !e.target.closest('.date-card')) closeCal();
+      if (calOpen && !e.target.closest('.mini-cal') && !e.target.closest('.date-chip')) closeCal();
     });
     document.addEventListener('keydown', (e) => {
       if (e.key !== 'Escape') return;
       if (calOpen) closeCal();
-      else if (infoOpen) closeInfo();
+      else if (spotOpen) closeSpot();
     });
 
-    // --- Map wiring -------------------------------------------------------
-    let rafPending = null, raf = 0;
-    map.on('mousemove', (e) => {
-      rafPending = { lat: e.lngLat.lat, lng: e.lngLat.lng };
-      if (!raf) {
-        raf = requestAnimationFrame(() => {
-          raf = 0;
-          cursor = rafPending;
-          if (!infoOpen) renderPillCoords();
-        });
+    // ═══ Locate me + zoom ════════════════════════════════════════════════════
+    const locateBtn = document.getElementById('locate');
+    const toast = document.getElementById('toast');
+    let toastTimer = 0;
+    function showToast(msg) {
+      toast.textContent = msg;
+      toast.dataset.show = '1';
+      clearTimeout(toastTimer);
+      toastTimer = setTimeout(() => { toast.dataset.show = '0'; }, 4200);
+    }
+    function inBounds(lng, lat) {
+      const [[w, s], [e, n]] = basemapBounds;
+      return lng >= w && lng <= e && lat >= s && lat <= n;
+    }
+    locateBtn.addEventListener('click', () => {
+      if (!navigator.geolocation) {
+        showToast('This browser does not share location.');
+        return;
       }
+      locateBtn.dataset.busy = '1';
+      navigator.geolocation.getCurrentPosition(
+        (pos) => {
+          locateBtn.dataset.busy = '0';
+          const { latitude: lat, longitude: lng } = pos.coords;
+          if (!inBounds(lng, lat)) {
+            showToast('You are outside the mapped area — the map covers the western US coast.');
+            return;
+          }
+          map.flyTo({ center: [lng, lat], zoom: Math.max(map.getZoom(), 12) });
+          openSpot({ lat, lng });
+        },
+        () => {
+          locateBtn.dataset.busy = '0';
+          showToast('Location is unavailable. Check the browser permission and try again.');
+        },
+        { enableHighAccuracy: false, timeout: 12000, maximumAge: 60000 },
+      );
     });
+    document.getElementById('zoom-in').addEventListener('click', () => map.zoomIn());
+    document.getElementById('zoom-out').addEventListener('click', () => map.zoomOut());
 
-    // Click selects a location: open the panel + save the Selected Observer
-    // there (or move it if already open).
-    map.on('click', (e) => openInfoAt({ lat: e.lngLat.lat, lng: e.lngLat.lng }));
+    // ═══ Map wiring ══════════════════════════════════════════════════════════
+    map.on('click', (e) => openSpot({ lat: e.lngLat.lat, lng: e.lngLat.lng }));
 
     map.on('load', () => {
-      map.resize();                     // re-measure: the container may not have
-      recolorizeFromInputs();           // had its final size at construction time
+      map.resize();
+      recolorizeFromInputs();
+      drawRail();
+      map.addSource('sunray', { type: 'geojson', data: EMPTY_FC });
+      map.addLayer({
+        id: 'sunray-line',
+        type: 'line',
+        source: 'sunray',
+        paint: {
+          'line-color': '#cf5b2e',
+          'line-width': 2.4,
+          'line-opacity': 0.9,
+          'line-dasharray': [0.2, 1.9],
+        },
+        layout: { 'line-cap': 'round' },
+      }, firstSymbolId);
     });
-    // compact:true still re-expands on every attribution repopulate in MapLibre 4.x.
-    // Keep it collapsed to the (i) button by stripping the show-class on each data/
-    // idle event (these fire throughout load), but never while the user is hovering
-    // it open to read the credits — so clicking the (i) on a settled map still works.
     const collapseAttrib = () => {
       const a = map.getContainer().querySelector('.maplibregl-ctrl-attrib');
       if (a && !a.matches(':hover')) a.classList.remove('maplibregl-compact-show');
     };
     map.on('data', collapseAttrib);
     map.on('idle', collapseAttrib);
-    setTimeout(() => map.resize(), 200); // fallback for late layout/font settling
+    setTimeout(() => map.resize(), 200);
     map.on('moveend', () => {
       recolorizeFromInputs();
-      if (infoOpen) renderPanel();      // newly-loaded tiles may add a verdict
+      drawRail();                        // curve tracks the map latitude
+      if (spotOpen) renderPlate();
     });
 
     // initial paint
-    renderDatePill();
-    renderPillCoords();
+    renderDate();
+    drawRail();
   })();
   </script>
 </body>
