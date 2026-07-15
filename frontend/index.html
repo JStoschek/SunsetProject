@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <title>Sunset Scout — where the last light lands</title>
 
   <link rel="preconnect" href="https://fonts.googleapis.com" />
@@ -36,8 +36,13 @@
     --radius:10px;
   }
   *{box-sizing:border-box;}
+  html{-webkit-text-size-adjust:100%;}
   html,body{margin:0;height:100%;overflow:hidden;background:#e9e2d4;}
   body{font-family:'Zilla Slab',Georgia,serif;color:var(--brown);}
+  /* touch: no 300ms double-tap zoom on controls, no gray tap flash */
+  button{touch-action:manipulation;}
+  button,.rail{-webkit-tap-highlight-color:transparent;}
+  .board,.dock{user-select:none;-webkit-user-select:none;}
   .cond{font-family:'Barlow Condensed',sans-serif;}
   .mono{font-family:'IBM Plex Mono',ui-monospace,monospace;}
   button{font-family:inherit;}
@@ -219,18 +224,32 @@
   .maplibregl-ctrl-attrib{font-size:10px;}
 
   /* ── responsive ───────────────────────────────────────────────────────── */
-  @media (max-width:760px){
-    .board{padding:9px 12px 8px;}
-    .board-name{font-size:16px;}
-    .legend{gap:4px 10px;flex-wrap:wrap;}
-    .spot-plate{right:12px;left:12px;width:auto;top:auto;bottom:186px;
-      max-height:calc(100vh - 210px);overflow-y:auto;}
+  @media (max-width:640px){
+    /* board can't run under the control stack (44px + margins) */
+    .board{padding:8px 11px 7px;max-width:calc(100vw - 92px);}
+    .board-name{font-size:15px;}
+    .legend{gap:3px 10px;flex-wrap:wrap;margin-top:6px;padding-top:6px;}
+    /* 44px minimum touch targets (Apple HIG) */
+    .ctl-btn{width:44px;height:44px;}
+    .spot-plate{right:10px;left:10px;width:auto;top:auto;
+      bottom:calc(180px + env(safe-area-inset-bottom));
+      max-height:calc(100vh - 244px);
+      max-height:calc(100dvh - 244px);   /* dvh: stable under iOS URL-bar collapse */
+      overflow-y:auto;}
+    .sp-close{width:32px;height:32px;top:7px;right:7px;}
+    .sp-verdict{font-size:18px;}
     .sp-foot{display:none;}
-    .dock{bottom:12px;flex-wrap:wrap;gap:6px;}
+    .dock{bottom:max(10px,env(safe-area-inset-bottom));flex-wrap:wrap;gap:6px;
+      width:calc(100vw - 20px);}
     .dock-side{flex-direction:row;order:2;flex:1;}
-    .date-chip{flex:1;}
-    .today-btn{padding:10px 14px;height:auto;}
+    .date-chip{flex:1;min-height:48px;justify-content:center;}
+    .today-btn{padding:0 16px;min-height:48px;}
     .rail-wrap{order:1;width:100%;flex-basis:100%;}
+    .rail svg{height:70px;}              /* fatter drag surface */
+    .rail-step{width:42px;}
+    .rail-cap{letter-spacing:.12em;font-size:10px;}
+    .knob-sun{width:16px;height:16px;}   /* easier to see & grab */
+    .knob-line{bottom:18px;}
   }
 
   @media (prefers-reduced-motion:reduce){
@@ -774,6 +793,8 @@
     const STRIP_Y = 39, STRIP_H = 9;          // per-day visibility band
     const CAP_DEFAULT = 'Drag the sun to pick a date';
     const CAP_STRIP = 'Horizon sunsets here — colored days reach the horizon, tap to preview';
+    const CAP_STRIP_SHORT = 'Colored days reach the horizon — tap to preview';
+    const MOBILE_MQ = matchMedia('(max-width:640px)');
 
     function drawRail() {
       const y = currentDate.getFullYear();
@@ -847,7 +868,9 @@
       }
       // An engine-water pixel emits zero day rects — no band, default caption.
       const hasStrip = stripDays > 0;
-      railCap.textContent = hasStrip ? CAP_STRIP : CAP_DEFAULT;
+      railCap.textContent = hasStrip
+        ? (MOBILE_MQ.matches ? CAP_STRIP_SHORT : CAP_STRIP)
+        : CAP_DEFAULT;
       railCap.dataset.strip = hasStrip ? '1' : '0';
 
       railSvg.setAttribute('viewBox', `0 0 ${RAIL_W} ${RAIL_H}`);
@@ -1091,6 +1114,8 @@
       drawRail();                        // curve tracks the map latitude
       if (spotOpen) renderPlate();
     });
+    // crossing the mobile breakpoint swaps the rail caption length
+    MOBILE_MQ.addEventListener('change', () => drawRail());
 
     // initial paint
     renderDate();
