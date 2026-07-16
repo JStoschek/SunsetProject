@@ -5,6 +5,28 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <title>Sunset Scout — where the last light lands</title>
 
+  <!-- SEO / social -->
+  <meta name="description" content="Sunset Scout maps where the sunset will actually be visible across the US coast — which spots get the last light and which are blocked by terrain. Tap anywhere to check." />
+  <link rel="canonical" href="https://sunsetscout.com/" />
+  <meta name="robots" content="index, follow" />
+  <meta name="theme-color" content="#cf5b2e" />
+
+  <!-- Open Graph (link previews on iMessage, Slack, Facebook, etc.) -->
+  <meta property="og:type" content="website" />
+  <meta property="og:site_name" content="Sunset Scout" />
+  <meta property="og:title" content="Sunset Scout — where the last light lands" />
+  <meta property="og:description" content="A map of where the sunset will actually be visible across the US coast — which spots get the last light, and which are blocked by terrain." />
+  <meta property="og:url" content="https://sunsetscout.com/" />
+  <meta property="og:image" content="https://sunsetscout.com/og-image.png" />
+  <meta property="og:image:width" content="1200" />
+  <meta property="og:image:height" content="630" />
+
+  <!-- Twitter / X card -->
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:title" content="Sunset Scout — where the last light lands" />
+  <meta name="twitter:description" content="A map of where the sunset will actually be visible across the US coast — which spots get the last light, and which are blocked by terrain." />
+  <meta name="twitter:image" content="https://sunsetscout.com/og-image.png" />
+
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Zilla+Slab:wght@500;600;700&family=Barlow+Condensed:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
@@ -47,6 +69,10 @@
   .mono{font-family:'IBM Plex Mono',ui-monospace,monospace;}
   button{font-family:inherit;}
   button:focus-visible{outline:2.5px solid var(--ember);outline-offset:2px;}
+
+  /* Off-screen but present for crawlers and screen readers. */
+  .visually-hidden{position:absolute;width:1px;height:1px;margin:-1px;padding:0;
+    overflow:hidden;clip:rect(0 0 0 0);clip-path:inset(50%);white-space:nowrap;border:0;}
 
   #map{position:fixed;inset:0;}
   .maplibregl-map{background:#e9e2d4;font:inherit;}
@@ -278,11 +304,26 @@
   </style>
 </head>
 <body>
+  <!-- Crawlable description of the app. The UI itself is a map canvas with no
+       indexable text, so this gives search engines and screen readers real
+       content about what Sunset Scout does. -->
+  <section class="visually-hidden">
+    <h1>Sunset Scout — where the last light lands</h1>
+    <p>Sunset Scout is an interactive map that shows where the sunset will
+       actually be visible along the United States coastline. For any spot you
+       tap, it works out whether the setting sun reaches you or is blocked by
+       terrain — hills, headlands, and mountains between you and the horizon —
+       so you can pick a viewpoint that genuinely catches the last light.</p>
+    <p>Lit areas get an unobstructed view of the sunset; blocked areas sit in
+       terrain shadow at sunset. Use it to plan where to watch the sunset near
+       you, from beaches and clifftops to city overlooks.</p>
+  </section>
+
   <div id="map"></div>
 
   <!-- sign board: name + simple legend -->
   <header class="board plate">
-    <h1 class="board-name">Sunset Scout</h1>
+    <p class="board-name">Sunset Scout</p>
     <div class="legend">
       <span><i class="swatch swatch-lit"></i>sunset visible</span>
       <span><i class="swatch swatch-dark"></i>blocked</span>
