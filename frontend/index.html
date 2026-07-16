@@ -107,6 +107,12 @@
     border:none;border-radius:7px;background:transparent;color:var(--faded);
     transition:background .15s ease,color .15s ease;}
   .sp-close:hover{background:rgba(40,64,47,.1);color:var(--pine);}
+  /* mobile-only: expand/collapse the detail rows (chevron in the header) */
+  .sp-expand{display:none;position:absolute;top:6px;right:41px;width:34px;height:34px;
+    align-items:center;justify-content:center;border:none;border-radius:7px;
+    background:transparent;color:var(--faded);cursor:pointer;}
+  .sp-expand svg{transition:transform .25s ease;}
+  .spot-plate[data-collapsed="0"] .sp-expand svg{transform:rotate(180deg);}
 
   .sp-rows{padding:4px 15px 8px;}
   .sp-row{display:flex;align-items:baseline;justify-content:space-between;gap:12px;
@@ -225,31 +231,45 @@
 
   /* ── responsive ───────────────────────────────────────────────────────── */
   @media (max-width:640px){
-    /* board can't run under the control stack (44px + margins) */
-    .board{padding:8px 11px 7px;max-width:calc(100vw - 92px);}
-    .board-name{font-size:15px;}
-    .legend{gap:3px 10px;flex-wrap:wrap;margin-top:6px;padding-top:6px;}
+    /* Phone layout is a different UI, not a reflow: the spot card opens as a
+       compact sheet (verdict only, chevron expands the rows) and the dock is
+       ONE slim row (date · rail · today) — the map stays visible. */
+    .board{padding:7px 10px 6px;max-width:calc(100vw - 92px);}
+    .board-name{font-size:14px;}
+    .legend{gap:3px 8px;flex-wrap:wrap;margin-top:5px;padding-top:5px;}
+    .legend span{font-size:10px;}
+    .swatch{width:10px;height:10px;}
     /* 44px minimum touch targets (Apple HIG) */
     .ctl-btn{width:44px;height:44px;}
+
+    /* spot card: sits just above the dock; collapsed by default */
     .spot-plate{right:10px;left:10px;width:auto;top:auto;
-      bottom:calc(180px + env(safe-area-inset-bottom));
-      max-height:calc(100vh - 244px);
-      max-height:calc(100dvh - 244px);   /* dvh: stable under iOS URL-bar collapse */
+      bottom:calc(92px + env(safe-area-inset-bottom));
+      max-height:calc(100vh - 200px);
+      max-height:calc(100dvh - 200px);   /* dvh: stable under iOS URL-bar collapse */
       overflow-y:auto;}
-    .sp-close{width:32px;height:32px;top:7px;right:7px;}
-    .sp-verdict{font-size:18px;}
+    .sp-head{cursor:pointer;padding:10px 13px 9px;}
+    .sp-verdict{font-size:17px;padding-right:64px;}  /* clear the two buttons */
+    .sp-expand{display:flex;}
+    .sp-close{width:34px;height:34px;top:6px;right:5px;}
     .sp-foot{display:none;}
-    .dock{bottom:max(10px,env(safe-area-inset-bottom));flex-wrap:wrap;gap:6px;
+    .spot-plate[data-collapsed="1"] .sp-rows{display:none;}
+    .spot-plate[data-collapsed="1"] .sp-head{border-bottom:none;}
+
+    /* dock: one slim row */
+    .dock{bottom:max(10px,env(safe-area-inset-bottom));gap:6px;
       width:calc(100vw - 20px);}
-    .dock-side{flex-direction:row;order:2;flex:1;}
-    .date-chip{flex:1;min-height:48px;justify-content:center;}
-    .today-btn{padding:0 16px;min-height:48px;}
-    .rail-wrap{order:1;width:100%;flex-basis:100%;}
-    .rail svg{height:70px;}              /* fatter drag surface */
-    .rail-step{width:42px;}
-    .rail-cap{letter-spacing:.12em;font-size:10px;}
+    .date-chip{min-width:0;padding:6px 10px;min-height:48px;justify-content:center;}
+    .dc-wk{display:none;}
+    .dc-date{font-size:15px;}
+    .dc-yr{font-size:9.5px;}
+    .rail-cap{display:none;}             /* the band explains itself */
+    .rail-wrap{padding:5px 4px;}
+    .rail svg{height:60px;}
+    .rail-step{width:34px;}
+    .today-btn{padding:0 10px;font-size:11px;min-height:48px;}
     .knob-sun{width:16px;height:16px;}   /* easier to see & grab */
-    .knob-line{bottom:18px;}
+    .knob-line{bottom:14px;}
   }
 
   @media (prefers-reduced-motion:reduce){
@@ -289,9 +309,12 @@
 
   <!-- spot plate -->
   <aside class="spot-plate plate" id="spot-plate" data-open="0" data-verdict="none" aria-hidden="true">
-    <div class="sp-head">
+    <div class="sp-head" id="sp-head">
       <div class="sp-coords mono" id="sp-coords">—</div>
       <h2 class="sp-verdict" id="sp-verdict">—</h2>
+      <button class="sp-expand" id="sp-expand" aria-label="Toggle details" aria-expanded="false">
+        <svg width="13" height="13" viewBox="0 0 16 16"><path d="M3.5 10.5 8 6l4.5 4.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
       <button class="sp-close" id="sp-close" aria-label="Close">
         <svg width="11" height="11" viewBox="0 0 11 11"><path d="M1.5 1.5 9.5 9.5M9.5 1.5 1.5 9.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
       </button>
@@ -757,6 +780,7 @@
       spot = { lat: pt.lat, lng: pt.lng };
       spotOpen = true;
       spotPlate.dataset.open = '1';
+      setCollapsed(MOBILE_MQ.matches);   // phones: verdict-only sheet
       spotPlate.setAttribute('aria-hidden', 'false');
       renderPlate();
       updateMarker();
@@ -773,6 +797,19 @@
       drawRail();                       // strip off, caption back to default
     }
     document.getElementById('sp-close').addEventListener('click', closeSpot);
+
+    // Mobile collapse: the card opens as a verdict-only sheet; tapping the
+    // header (or the chevron) reveals/hides the detail rows.
+    const spExpand = document.getElementById('sp-expand');
+    function setCollapsed(c) {
+      spotPlate.dataset.collapsed = c ? '1' : '0';
+      spExpand.setAttribute('aria-expanded', c ? 'false' : 'true');
+    }
+    document.getElementById('sp-head').addEventListener('click', (e) => {
+      if (!MOBILE_MQ.matches) return;            // desktop card is always full
+      if (e.target.closest('.sp-close')) return;
+      setCollapsed(spotPlate.dataset.collapsed !== '1');
+    });
 
     // ═══ Year rail (from alt) + per-day spot strip (from alt2) ══════════════
     const rail = document.getElementById('rail');
@@ -1114,8 +1151,12 @@
       drawRail();                        // curve tracks the map latitude
       if (spotOpen) renderPlate();
     });
-    // crossing the mobile breakpoint swaps the rail caption length
-    MOBILE_MQ.addEventListener('change', () => drawRail());
+    // crossing the mobile breakpoint swaps the rail caption length and
+    // un-collapses the card (desktop always shows the full card)
+    MOBILE_MQ.addEventListener('change', () => {
+      drawRail();
+      if (!MOBILE_MQ.matches) setCollapsed(false);
+    });
 
     // initial paint
     renderDate();
