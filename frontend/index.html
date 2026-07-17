@@ -3,10 +3,10 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-  <title>Sunset Scout — where the last light lands</title>
+  <title>Sunset Scout: where can I see the sunset?</title>
 
   <!-- SEO / social -->
-  <meta name="description" content="Sunset Scout maps where the sunset will actually be visible across the US coast — which spots get the last light and which are blocked by terrain. Tap anywhere to check." />
+  <meta name="description" content="Find out where the sunset will actually be visible across the US coast. See which spots get a clear view and which are blocked by terrain. Tap anywhere to check." />
   <link rel="canonical" href="https://sunsetscout.com/" />
   <meta name="robots" content="index, follow" />
   <meta name="theme-color" content="#cf5b2e" />
@@ -14,8 +14,8 @@
   <!-- Open Graph (link previews on iMessage, Slack, Facebook, etc.) -->
   <meta property="og:type" content="website" />
   <meta property="og:site_name" content="Sunset Scout" />
-  <meta property="og:title" content="Sunset Scout — where the last light lands" />
-  <meta property="og:description" content="A map of where the sunset will actually be visible across the US coast — which spots get the last light, and which are blocked by terrain." />
+  <meta property="og:title" content="Sunset Scout: where can I see the sunset?" />
+  <meta property="og:description" content="Find out where the sunset will actually be visible across the US coast. See which spots get a clear view and which are blocked by terrain." />
   <meta property="og:url" content="https://sunsetscout.com/" />
   <meta property="og:image" content="https://sunsetscout.com/og-image.png" />
   <meta property="og:image:width" content="1200" />
@@ -23,8 +23,8 @@
 
   <!-- Twitter / X card -->
   <meta name="twitter:card" content="summary_large_image" />
-  <meta name="twitter:title" content="Sunset Scout — where the last light lands" />
-  <meta name="twitter:description" content="A map of where the sunset will actually be visible across the US coast — which spots get the last light, and which are blocked by terrain." />
+  <meta name="twitter:title" content="Sunset Scout: where can I see the sunset?" />
+  <meta name="twitter:description" content="Find out where the sunset will actually be visible across the US coast. See which spots get a clear view and which are blocked by terrain." />
   <meta name="twitter:image" content="https://sunsetscout.com/og-image.png" />
 
   <link rel="preconnect" href="https://fonts.googleapis.com" />
@@ -367,12 +367,12 @@
        indexable text, so this gives search engines and screen readers real
        content about what Sunset Scout does. -->
   <section class="visually-hidden">
-    <h1>Sunset Scout — where the last light lands</h1>
+    <h1>Sunset Scout: where can I see the sunset?</h1>
     <p>Sunset Scout is an interactive map that shows where the sunset will
        actually be visible along the United States coastline. For any spot you
        tap, it works out whether the setting sun reaches you or is blocked by
-       terrain — hills, headlands, and mountains between you and the horizon —
-       so you can pick a viewpoint that genuinely catches the last light.</p>
+       terrain, such as hills, headlands, and mountains between you and the
+       horizon, so you can pick a viewpoint that genuinely catches the sunset.</p>
     <p>Lit areas get an unobstructed view of the sunset; blocked areas sit in
        terrain shadow at sunset. Use it to plan where to watch the sunset near
        you, from beaches and clifftops to city overlooks.</p>
@@ -596,20 +596,26 @@
       return new Uint8Array(await new Response(stream).arrayBuffer());
     }
 
+    // Same colour semantics as colorizeBitmaskPixel (colorizer.js), with the
+    // two bit reads inlined: this runs 262k times per tile on every recolor,
+    // and a per-pixel subarray + tuple is too much allocation for a drag.
     function applyBitmask(raw, mask, tileSize, bytesPerPixel, bitIndex) {
-      const out = new Uint8ClampedArray(tileSize * tileSize * 4);
+      const n = tileSize * tileSize;
+      const out = new Uint8ClampedArray(n * 4);
       const { flagBitIndex } = layout;
-      for (let i = 0; i < tileSize * tileSize; i++) {
+      const flagByte = flagBitIndex >> 3, flagMask = 1 << (flagBitIndex & 7);
+      const visByte = bitIndex == null ? 0 : bitIndex >> 3;
+      const visMask = bitIndex == null ? 0 : 1 << (bitIndex & 7);
+      for (let i = 0, base = 0; i < n; i++, base += bytesPerPixel) {
         const j = i * 4;
-        if (raw) {
-          const pixel = raw.subarray(i * bytesPerPixel, (i + 1) * bytesPerPixel);
-          const [r, g, b, a] = colorizeBitmaskPixel(pixel, flagBitIndex, bitIndex);
-          if (a !== 0) {
-            out[j] = r; out[j + 1] = g; out[j + 2] = b; out[j + 3] = a;
-            continue;
+        if (raw && (raw[base + flagByte] & flagMask)) {
+          if (raw[base + visByte] & visMask) {
+            out[j] = 255; out[j + 1] = 255; out[j + 2] = 255;
           }
+          out[j + 3] = 255;                   // computed land → white / black
+        } else if (mask && mask[i]) {
+          out[j + 3] = 255;                   // uncovered US land → black
         }
-        if (mask && mask[i]) out[j + 3] = 255; // uncovered US land → black
       }
       return out;
     }
@@ -633,11 +639,11 @@
 
       const { tileSize, bytesPerPixel, raw, mask } = cached;
       const rgba = applyBitmask(raw, mask, tileSize, bytesPerPixel, currentBitIndex);
-      const canvas = new OffscreenCanvas(tileSize, tileSize);
-      const ctx = canvas.getContext('2d');
-      ctx.putImageData(new ImageData(rgba, tileSize, tileSize), 0, 0);
-      const blob = await canvas.convertToBlob();
-      return { data: await blob.arrayBuffer() };
+      // MapLibre accepts an ImageBitmap from a protocol as-is, so skip the
+      // OffscreenCanvas → PNG encode → PNG decode round-trip that used to run
+      // per tile on every date change.
+      const bitmap = await createImageBitmap(new ImageData(rgba, tileSize, tileSize));
+      return { data: bitmap };
     });
 
     // Self-contained vector basemap (PMTiles over HTTP range requests).
@@ -815,11 +821,13 @@
 
     // ═══ Sun almanac ═════════════════════════════════════════════════════════
     const SUN_TZ = 'America/Los_Angeles';
+    // Intl formatters are costly to construct — build each once, not per call.
+    const TIME_FMT = new Intl.DateTimeFormat('en-US', {
+      hour: 'numeric', minute: '2-digit', timeZone: SUN_TZ,
+    });
     function fmtTime(d) {
       if (!d || isNaN(d.getTime())) return '—';
-      return new Intl.DateTimeFormat('en-US', {
-        hour: 'numeric', minute: '2-digit', timeZone: SUN_TZ,
-      }).format(d);
+      return TIME_FMT.format(d);
     }
     function fmtDuration(ms) {
       if (!isFinite(ms) || ms <= 0) return '—';
@@ -1150,17 +1158,20 @@
         ${months}`;
     }
 
+    const WEEKDAY_FMT = new Intl.DateTimeFormat('en-US', { weekday: 'long' });
+    const CHIP_DATE_FMT = new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric' });
+    const FULL_DATE_FMT = new Intl.DateTimeFormat('en-US',
+      { month: 'long', day: 'numeric', year: 'numeric' });
     function renderDate() {
-      dcWk.textContent = new Intl.DateTimeFormat('en-US', { weekday: 'long' }).format(currentDate);
-      dcDate.textContent = new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric' }).format(currentDate);
+      dcWk.textContent = WEEKDAY_FMT.format(currentDate);
+      dcDate.textContent = CHIP_DATE_FMT.format(currentDate);
       dcYr.textContent = currentDate.getFullYear();
       const days = daysInYear(currentDate.getFullYear());
       const doy = dayOfYear(currentDate);
       knob.style.left = `${((doy - 1) / (days - 1)) * 100}%`;
       rail.setAttribute('aria-valuemax', days);
       rail.setAttribute('aria-valuenow', doy);
-      rail.setAttribute('aria-valuetext', new Intl.DateTimeFormat('en-US',
-        { month: 'long', day: 'numeric', year: 'numeric' }).format(currentDate));
+      rail.setAttribute('aria-valuetext', FULL_DATE_FMT.format(currentDate));
       todayBtn.dataset.today = sameDay(currentDate, new Date()) ? '1' : '0';
     }
 
@@ -1190,10 +1201,21 @@
       rail.setPointerCapture(e.pointerId);
       selectDate(railDateFromEvent(e));
     });
+    // Coalesce drag updates to one per frame: pointermove can fire at 120Hz+,
+    // and each date change recolors the whole visible tile pyramid.
+    let pendingDragDate = null;
+    let dragRaf = 0;
     rail.addEventListener('pointermove', (e) => {
       if (!dragging) return;
-      const d = railDateFromEvent(e);
-      if (!sameDay(d, currentDate)) selectDate(d);
+      pendingDragDate = railDateFromEvent(e);
+      if (dragRaf) return;
+      dragRaf = requestAnimationFrame(() => {
+        dragRaf = 0;
+        if (pendingDragDate && !sameDay(pendingDragDate, currentDate)) {
+          selectDate(pendingDragDate);
+        }
+        pendingDragDate = null;
+      });
     });
     const endDrag = () => { dragging = false; rail.dataset.drag = '0'; };
     rail.addEventListener('pointerup', endDrag);
@@ -1397,9 +1419,13 @@
         layout: { 'line-cap': 'round' },
       }, firstSymbolId);
     });
+    // 'data' fires per tile — cache the lookup instead of querying every time.
+    let attribEl = null;
     const collapseAttrib = () => {
-      const a = map.getContainer().querySelector('.maplibregl-ctrl-attrib');
-      if (a && !a.matches(':hover')) a.classList.remove('maplibregl-compact-show');
+      attribEl ||= map.getContainer().querySelector('.maplibregl-ctrl-attrib');
+      if (attribEl && !attribEl.matches(':hover')) {
+        attribEl.classList.remove('maplibregl-compact-show');
+      }
     };
     map.on('data', collapseAttrib);
     map.on('idle', collapseAttrib);
