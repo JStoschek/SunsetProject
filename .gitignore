@@ -61,6 +61,10 @@ azimuth.json
 # Local box manifest (template: boxes.example.json)
 /boxes.json
 
+# Local deploy config overrides sourced by scripts/deploy.sh — may hold
+# environment-specific values; never commit it.
+/scripts/deploy.env
+
 # Derived from the local boxes.json by the run_boxes driver (fill_dir) —
 # regenerated automatically, like the tile pyramid above.
 /frontend/us_land_fill.geojson
