@@ -1,0 +1,1355 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>How Sunset Scout works: the physics and the algorithm</title>
+  <meta name="description" content="The full technical explanation of how Sunset Scout decides, for every ~10 m square of the US West Coast and every day of the year, whether you can watch the sun set into the ocean. Every approximation is disclosed." />
+  <link rel="canonical" href="https://sunsetscout.com/how-it-works.html" />
+  <meta name="theme-color" content="#cf5b2e" />
+
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Zilla+Slab:wght@400;500;600;700&family=Barlow+Condensed:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+
+  <style>
+    /* Sunset Scout palette, shared with the map UI. */
+    :root {
+      --pine: #28402f;
+      --pine-2: #3c5844;
+      --kraft: #f0e6cd;
+      --kraft-2: #e3d6b2;
+      --ember: #cf5b2e;
+      --brass: #d99a2b;
+      --brown: #41372a;
+      --faded: rgba(65,55,42,.62);
+      --water: #aadaff;
+      --water-ink: #5a7bb5;
+      --lit: #fdfaf2;
+      --dark: #4c524f;
+      --plate-shadow: 0 2px 0 rgba(40,64,47,.35), 0 12px 26px -12px rgba(40,64,47,.5);
+      --radius: 10px;
+
+      /* Two type voices, one scale. The serif carries the content (h1 2.15 /
+         h2 1.45 / h3 1.08 / body 1.0625rem); condensed uppercase carries the
+         apparatus — eyebrows, chips, captions, table heads. The label steps
+         below are sized to slot between the serif steps rather than compete
+         with them, and are in rem so they scale with the reader's font size
+         instead of staying frozen at a px value. Tracking loosens as the
+         steps get smaller, which is where uppercase needs the help. */
+      --label-lg: 1.12rem;   /* header of a boxed aside — peer of h3   */
+      --label-md: .95rem;    /* section eyebrow above an h2            */
+      --label-sm: .86rem;    /* chips, backlink, figure numbers        */
+      --label-xs: .78rem;    /* quietest: toc heading, table heads     */
+    }
+    * { box-sizing: border-box; }
+    html { -webkit-text-size-adjust: 100%; }
+    body {
+      margin: 0; padding: 0 18px 90px;
+      background: #e9e2d4;
+      color: var(--brown);
+      font-family: 'Zilla Slab', Georgia, serif;
+      font-size: 1.0625rem; line-height: 1.65;
+    }
+    main, header.page, footer { max-width: 47rem; margin: 0 auto; }
+    a { color: var(--ember); }
+    a:focus-visible { outline: 2.5px solid var(--ember); outline-offset: 2px; border-radius: 3px; }
+
+    header.page { padding: 30px 0 4px; }
+    .backlink {
+      font-family: 'Barlow Condensed', sans-serif; font-weight: 600;
+      font-size: var(--label-sm); letter-spacing: .14em; text-transform: uppercase;
+      text-decoration: none;
+    }
+    .kicker {
+      margin: 18px 0 0; font-family: 'Barlow Condensed', sans-serif;
+      font-weight: 600; font-size: var(--label-sm); letter-spacing: .2em;
+      text-transform: uppercase; color: var(--ember);
+    }
+    h1 {
+      margin: 4px 0 8px; font-size: 2.15rem; line-height: 1.15;
+      font-weight: 700; color: var(--pine); letter-spacing: .005em;
+    }
+    .subtitle { margin: 0; font-size: 1.05rem; color: var(--faded); }
+
+    /* Table of contents: the page is a sequence of sections. */
+    nav.toc {
+      margin: 22px 0 6px; padding: 12px 14px;
+      background: var(--kraft); border: 2px solid var(--pine);
+      border-radius: var(--radius); box-shadow: var(--plate-shadow);
+    }
+    nav.toc p {
+      margin: 0 0 7px; font-family: 'Barlow Condensed', sans-serif;
+      font-weight: 600; font-size: var(--label-xs); letter-spacing: .18em;
+      text-transform: uppercase; color: var(--faded);
+    }
+    nav.toc ol { margin: 0; padding: 0; list-style: none; display: flex; flex-wrap: wrap; gap: 6px; }
+    nav.toc a {
+      display: inline-block; padding: 3px 10px;
+      font-family: 'Barlow Condensed', sans-serif; font-weight: 600;
+      font-size: var(--label-sm); letter-spacing: .05em; text-decoration: none;
+      color: var(--pine); background: var(--kraft-2);
+      border: 1.5px solid rgba(40,64,47,.45); border-radius: 999px;
+    }
+    nav.toc a:hover { background: #f7efdb; }
+
+    section { margin-top: 40px; }
+    .section-label {
+      margin: 0; font-family: 'Barlow Condensed', sans-serif;
+      font-weight: 700; font-size: var(--label-md); letter-spacing: .16em;
+      text-transform: uppercase; color: var(--ember);
+    }
+    h2 {
+      margin: 2px 0 12px; font-size: 1.45rem; line-height: 1.25;
+      font-weight: 700; color: var(--pine);
+      border-bottom: 2px dashed rgba(40,64,47,.3); padding-bottom: 6px;
+    }
+    h3 { margin: 1.5em 0 .4em; font-size: 1.08rem; font-weight: 600; color: var(--pine); }
+
+    code {
+      font-family: 'IBM Plex Mono', ui-monospace, monospace;
+      font-size: .84em; background: var(--kraft-2);
+      padding: 1px 5px; border-radius: 4px;
+    }
+    /* Display equations are MathML, laid out by the browser's own math engine.
+       No font-family here on purpose: the UA math font carries the glyph
+       variants and metrics that stretch radicals and fraction bars correctly. */
+    math.formula {
+      display: block; margin: 16px 0; padding: 16px;
+      font-size: 1.15em; overflow-x: auto; overflow-y: hidden;
+      background: var(--kraft); border: 1.5px solid rgba(40,64,47,.4);
+      border-radius: var(--radius);
+    }
+    math.formula mtext { font-family: 'Zilla Slab', Georgia, serif; }
+    @media (max-width: 640px) { math.formula { font-size: 1em; padding: 12px 10px; } }
+
+    /* Interpretive panels: the figures. */
+    figure.panel {
+      margin: 22px 0; padding: 12px 12px 8px;
+      background: var(--kraft); border: 2px solid var(--pine);
+      border-radius: var(--radius); box-shadow: var(--plate-shadow);
+    }
+    figure.panel svg { display: block; width: 100%; height: auto; }
+    /* Knock a panel-coloured halo out from under figure labels, so sightlines
+       and axes passing behind them don't cut through the letterforms. Relies
+       on document order: the label groups must come last in the SVG. */
+    figure.panel svg.haloed text {
+      paint-order: stroke fill;
+      stroke: var(--kraft); stroke-width: 4.5px;
+      stroke-linejoin: round; stroke-linecap: round;
+    }
+    figure.panel figcaption {
+      margin-top: 8px; padding-top: 8px;
+      border-top: 1.5px dashed rgba(40,64,47,.3);
+      font-size: .92em; line-height: 1.5; color: var(--brown);
+    }
+    figure.panel figcaption .figno {
+      font-family: 'Barlow Condensed', sans-serif; font-weight: 700;
+      font-size: var(--label-sm); letter-spacing: .14em; text-transform: uppercase;
+      color: var(--ember); margin-right: 8px;
+    }
+
+    /* Deeper technical asides. */
+    aside.depth {
+      margin: 18px 0; padding: 12px 16px 10px;
+      background: var(--kraft-2); border: 1.5px solid rgba(40,64,47,.35);
+      border-left: 4px solid var(--ember); border-radius: 8px;
+      font-size: .95em;
+    }
+    aside.depth .note-title {
+      display: block; margin-bottom: 9px;
+      font-family: 'Barlow Condensed', sans-serif; font-weight: 700;
+      font-size: var(--label-lg); letter-spacing: .1em; text-transform: uppercase;
+      line-height: 1.2; color: var(--ember);
+    }
+    aside.depth ul { padding-left: 20px; }
+
+    table { border-collapse: collapse; width: 100%; margin: 14px 0; font-size: .93em; }
+    th, td { text-align: left; padding: 7px 10px; vertical-align: top;
+      border-bottom: 1.5px dashed rgba(40,64,47,.25); }
+    th {
+      font-family: 'Barlow Condensed', sans-serif; font-weight: 600;
+      font-size: var(--label-xs); letter-spacing: .09em; text-transform: uppercase;
+      color: var(--faded); border-bottom: 2px solid rgba(40,64,47,.45);
+    }
+    td code { white-space: nowrap; }
+
+    ol li, ul li { margin: 6px 0; }
+
+    figure.states { margin: 14px 0; }
+    .state {
+      display: inline-block; width: 14px; height: 14px;
+      border: 1.5px solid var(--pine); border-radius: 3px;
+      vertical-align: -2px; margin-right: 4px;
+    }
+    .state.lit { background: var(--lit); }
+    .state.dark { background: var(--dark); }
+    .state.clear { background: repeating-linear-gradient(45deg, #d5cdba, #d5cdba 3px, #efe9da 3px, #efe9da 6px); }
+
+    footer {
+      margin-top: 64px; padding-top: 14px;
+      border-top: 2px dashed rgba(40,64,47,.3);
+      color: var(--faded); font-size: .92em;
+    }
+
+    /* One quiet flourish: the hero sun breathes. */
+    @keyframes sunGlow { 0%, 100% { opacity: .55; } 50% { opacity: 1; } }
+    .sun-rays { animation: sunGlow 4.5s ease-in-out infinite; transform-origin: center; }
+    @media (prefers-reduced-motion: reduce) {
+      .sun-rays { animation: none; }
+    }
+    @media (max-width: 640px) {
+      body { font-size: 1rem; }
+      h1 { font-size: 1.7rem; }
+      /* Ease the two largest label steps down with the body text; the small
+         ones are already at their legibility floor for condensed uppercase. */
+      :root { --label-lg: 1.05rem; --label-md: .9rem; }
+    }
+  </style>
+</head>
+<body>
+
+<header class="page">
+  <a class="backlink" href="./">&larr; Back to the map</a>
+  <p class="kicker">Sunset Scout &middot; under the hood</p>
+  <h1>How the map knows where you can watch the sunset</h1>
+  <p class="subtitle">The physics and the algorithm behind every pixel, including
+  every shortcut that lets the whole thing be computed on one laptop.</p>
+
+  <nav class="toc" aria-label="Sections">
+    <p>Contents &middot; 9 sections</p>
+    <ol>
+      <li><a href="#question">1 &middot; The question</a></li>
+      <li><a href="#key-idea">2 &middot; Dates become directions</a></li>
+      <li><a href="#physics">3 &middot; The physics</a></li>
+      <li><a href="#sweep">4 &middot; The sweep</a></li>
+      <li><a href="#data">5 &middot; The data</a></li>
+      <li><a href="#tiles">6 &middot; Tiles</a></li>
+      <li><a href="#browser">7 &middot; In your browser</a></li>
+      <li><a href="#accuracy">8 &middot; Honest accuracy</a></li>
+      <li><a href="#verify">9 &middot; Check it yourself</a></li>
+    </ol>
+  </nav>
+</header>
+
+<main>
+
+<section id="question">
+<p class="section-label">Section 1 of 9</p>
+<h2>The question the map answers</h2>
+
+<p>For every patch of land along the US West Coast and for every day of the year, the map answers one question:</p>
+
+<p><em>If you stood here at sunset, could you watch the sun touch the ocean
+horizon, or does terrain get in the way first?</em></p>
+
+<figure class="panel">
+  <svg viewBox="0 0 760 320" role="img" aria-label="Side-view cartoon: a sun setting into the sea, a coastal hill, and two observers. The observer on a tall ridge has a clear sightline over the hill; the observer in the valley behind the hill is blocked.">
+    <!-- sun + rays -->
+    <g class="sun-rays" stroke="#d99a2b" stroke-width="3" stroke-linecap="round">
+      <line x1="75" y1="160" x2="75" y2="146"/>
+      <line x1="42" y1="174" x2="32" y2="164"/>
+      <line x1="108" y1="174" x2="118" y2="164"/>
+      <line x1="30" y1="203" x2="16" y2="203"/>
+      <line x1="120" y1="203" x2="134" y2="203"/>
+    </g>
+    <circle cx="75" cy="203" r="26" fill="#d99a2b" stroke="#cf5b2e" stroke-width="2.5"/>
+    <!-- sea (drawn after the sun so it hides the sun's lower half) -->
+    <rect x="0" y="205" width="270" height="115" fill="#aadaff"/>
+    <path d="M0,205 H270" stroke="#5a7bb5" stroke-width="2.5" fill="none"/>
+    <path d="M18,232 q10,-6 20,0 q10,6 20,0 M60,258 q10,-6 20,0 q10,6 20,0 M150,240 q10,-6 20,0 q10,6 20,0"
+          stroke="#5a7bb5" stroke-width="2" fill="none" opacity=".55"/>
+    <!-- Terrain: fill and outline are separate paths. The closed fill runs off
+         the bottom and right of the frame; the outline traces only the real
+         boundary (cliff face + skyline), so no stroke sits half-clipped on the
+         viewBox edge at half weight. Same reason the sea is an unstroked fill
+         with its surface drawn as its own line. -->
+    <path d="M270,207 L330,175 L390,150 L450,195 L520,192 L600,110 L660,135 L760,150 L760,320 L270,320 Z"
+          fill="#e3d6b2"/>
+    <path d="M270,320 L270,207 L330,175 L390,150 L450,195 L520,192 L600,110 L660,135 L760,150"
+          fill="none" stroke="#28402f" stroke-width="2.5" stroke-linejoin="round"/>
+    <!-- blocked sightline (drawn under the clear one) -->
+    <line x1="500" y1="181" x2="434" y2="183" stroke="#4c524f" stroke-width="2.5" stroke-dasharray="5 5"/>
+    <g stroke="#4c524f" stroke-width="3" stroke-linecap="round">
+      <line x1="428" y1="177" x2="440" y2="189"/>
+      <line x1="440" y1="177" x2="428" y2="189"/>
+    </g>
+    <!-- clear sightline -->
+    <line x1="600" y1="100" x2="101" y2="200" stroke="#cf5b2e" stroke-width="2.5" stroke-dasharray="7 6"/>
+    <!-- observer A on the ridge -->
+    <g stroke="#28402f" stroke-width="2.5" stroke-linecap="round" fill="none">
+      <circle cx="600" cy="94" r="6" fill="#f0e6cd"/>
+      <line x1="600" y1="100" x2="600" y2="110"/>
+    </g>
+    <!-- observer B in the valley -->
+    <g stroke="#28402f" stroke-width="2.5" stroke-linecap="round" fill="none">
+      <circle cx="505" cy="176" r="6" fill="#f0e6cd"/>
+      <line x1="505" y1="182" x2="505" y2="192"/>
+    </g>
+    <!-- verdict chips -->
+    <g font-family="'Barlow Condensed',sans-serif" font-weight="600" font-size="14" letter-spacing=".06em">
+      <rect x="548" y="48" width="146" height="26" rx="7" fill="#fdfaf2" stroke="#28402f" stroke-width="2.5"/>
+      <text x="621" y="66" text-anchor="middle" fill="#28402f">SEES THE SUNSET</text>
+      <rect x="462" y="222" width="86" height="26" rx="7" fill="#4c524f" stroke="#28402f" stroke-width="2.5"/>
+      <text x="505" y="240" text-anchor="middle" fill="#fdfaf2">BLOCKED</text>
+    </g>
+    <g font-family="'Barlow Condensed',sans-serif" font-size="13" fill="rgba(65,55,42,.75)">
+      <text x="10" y="303">PACIFIC</text>
+      <text x="688" y="303">INLAND</text>
+    </g>
+  </svg>
+  <figcaption><span class="figno">Fig 1</span>Same sunset, two answers. Two
+  people stand a short walk apart. The one on top of the ridge is high enough
+  that their line of sight passes over the coastal hill and reaches the ocean
+  horizon, so they see the sunset. The one down in the valley behind that same
+  hill has the hill in the way, so they don't. The map runs this comparison for
+  every patch of land and every sunset direction.</figcaption>
+</figure>
+
+<p>The map answers that question one small square at a time, and every square
+ends up in one of three states:</p>
+
+<figure class="states">
+  <p><span class="state lit"></span> <strong>White:</strong> an unobstructed
+  sightline exists from this spot to the ocean horizon in the direction the sun
+  sets on the selected date.<br>
+  <span class="state dark"></span> <strong>Black:</strong> terrain (a hill,
+  ridge, headland, or the curve of the Earth itself) blocks that sightline.<br>
+  <span class="state clear"></span> <strong>Transparent:</strong> ocean or bay
+  water. There is no land to stand on.</p>
+</figure>
+
+<p>Three assumptions are baked in, and it's worth knowing them up front:</p>
+
+<ul>
+  <li><strong>Your eyes are 2&nbsp;m above the bare ground.</strong> A single
+  configured observer height is used everywhere.</li>
+  <li><strong>Only bare terrain blocks the view.</strong> The elevation data is
+  a bare-earth model. Buildings, trees, and forests do not exist in it, neither
+  as obstructions nor as things to stand on.</li>
+  <li><strong>"Seeing the sunset" means seeing the sea-level ocean
+  horizon</strong> in the sunset's compass direction. If you can see the line
+  where the water meets the sky where the sun goes down, you can watch the sun
+  set into it.</li>
+</ul>
+</section>
+
+<section id="key-idea">
+<p class="section-label">Section 2 of 9</p>
+<h2>The key idea: dates become directions</h2>
+
+<p>The map lets you scrub through 365 days, but nothing is computed per date.
+The only thing about a date that matters here is the <strong>compass direction
+of the sunset</strong> (its <em>azimuth</em>, measured in degrees clockwise
+from north). The sun sets due west (270&deg;) at the equinoxes, swings north of
+west in summer and south of west in winter, and the swing depends on your
+latitude. Across the mapped coast (San Diego at 32.5&deg;N to the Canadian
+border at 49&deg;N) sunset azimuths span roughly 233&deg; (a little north of
+southwest) to 309&deg; (just shy of northwest) over the year.</p>
+
+<p>For each whole-degree azimuth from <strong>233&deg; to 309&deg;</strong>, which
+makes 77 directions, the pipeline computes a yes/no visibility answer for every
+land pixel. Each pixel ends up carrying <strong>77 bits</strong>, one per
+direction, plus one flag bit distinguishing land from water. The heavy computation work 
+is done once, offline, per direction instead of per date. When you pick a
+date in the browser, the site:</p>
+
+<ol>
+  <li>Computes that date's sunset azimuth for your latitude with the
+  <a href="https://github.com/mourner/suncalc">SunCalc</a> astronomy library
+  (the azimuth at the moment the sun's upper edge touches the horizon, using
+  the standard &minus;0.833&deg; refraction convention).</li>
+  <li>Rounds it to the nearest whole degree, picking one of the 77 bits.</li>
+  <li>Paints every pixel white or black by testing that one bit.</li>
+</ol>
+
+<figure class="panel">
+  <svg viewBox="0 0 760 372" role="img" aria-label="Top: a compass fan showing the range of sunset directions through the year, 233 to 309 degrees. Bottom: a strip of 77 bits, one per direction, with one bit highlighted for an example date, plus a land-flag bit.">
+    <!-- ocean tint + coast (top-down) -->
+    <rect x="20" y="20" width="225" height="270" fill="#aadaff" opacity=".5"/>
+    <path d="M245,20 C230,70 260,120 245,170 C232,215 252,255 245,290" fill="none" stroke="#5a7bb5" stroke-width="2.5"/>
+    <!-- swept wedge, polyline arc from 233 to 309 degrees -->
+    <path d="M245,170 L125.2,260.3 L113.8,242.7 L105.0,223.8 L98.8,203.7 L95.6,183.1 L95.2,162.1 L97.8,141.4 L103.2,121.2 L111.3,101.9 L122.1,84.0 L128.4,75.6 Z"
+          fill="#d99a2b" opacity=".28"/>
+    <!-- three labeled rays -->
+    <line x1="245" y1="170" x2="125" y2="260" stroke="#cf5b2e" stroke-width="2.5" stroke-dasharray="6 5"/>
+    <line x1="245" y1="170" x2="95"  y2="170" stroke="#d99a2b" stroke-width="2.5"/>
+    <line x1="245" y1="170" x2="128" y2="76"  stroke="#cf5b2e" stroke-width="2.5" stroke-dasharray="6 5"/>
+    <circle cx="125" cy="260" r="7" fill="#d99a2b" stroke="#28402f" stroke-width="2"/>
+    <circle cx="95"  cy="170" r="7" fill="#d99a2b" stroke="#28402f" stroke-width="2"/>
+    <circle cx="128" cy="76"  r="7" fill="#d99a2b" stroke="#28402f" stroke-width="2"/>
+    <!-- observer -->
+    <circle cx="245" cy="170" r="6" fill="#cf5b2e" stroke="#28402f" stroke-width="2"/>
+    <!-- north arrow -->
+    <g stroke="#28402f" stroke-width="2" fill="#28402f">
+      <line x1="700" y1="64" x2="700" y2="26"/>
+      <path d="M700,20 L694,32 L706,32 Z"/>
+    </g>
+    <text x="712" y="36" font-family="'Barlow Condensed',sans-serif" font-weight="600" font-size="15" fill="#28402f">N</text>
+    <!-- labels -->
+    <g font-family="'Barlow Condensed',sans-serif" font-weight="600" font-size="14" fill="#41372a">
+      <text x="118" y="282">233&deg; &middot; WINTER SOLSTICES</text>
+      <text x="30" y="150">270&deg; &middot; EQUINOXES,</text>
+      <text x="30" y="166">DUE WEST</text>
+      <text x="118" y="62">309&deg; &middot; SUMMER SOLSTICES</text>
+      <text x="258" y="160">YOU</text>
+      <text x="300" y="250" fill="rgba(65,55,42,.7)">THE 77 PRECOMPUTED</text>
+      <text x="300" y="266" fill="rgba(65,55,42,.7)">DIRECTIONS COVER EVERY</text>
+      <text x="300" y="282" fill="rgba(65,55,42,.7)">MAPPED LATITUDE'S YEAR</text>
+    </g>
+    <text x="380" y="120" font-family="'Zilla Slab',serif" font-weight="600" font-size="16" fill="#28402f">date + latitude &rarr; azimuth &rarr; one bit</text>
+    <!-- arrow from example ray toward the strip -->
+    <path d="M548,150 C610,180 622,240 600,300" fill="none" stroke="#cf5b2e" stroke-width="2" stroke-dasharray="4 5"/>
+    <path d="M600,306 L594,294 L606,295 Z" fill="#cf5b2e"/>
+    <text x="392" y="145" font-family="'IBM Plex Mono',monospace" font-size="12.5" fill="#cf5b2e">e.g. Jul 19 at 37.8&deg;N &rarr; 297&deg; &rarr; bit 64</text>
+    <!-- bit strip: 77 cells, x = 60 + 8.4*i, dark 0..8, white 9..40, dark 41..47, white 48..69, dark 70..76 -->
+    <g stroke="#28402f" stroke-width="1">
+      <rect x="60.0" y="308" width="75.6" height="18" fill="#4c524f"/>
+      <rect x="135.6" y="308" width="268.8" height="18" fill="#fdfaf2"/>
+      <rect x="404.4" y="308" width="58.8" height="18" fill="#4c524f"/>
+      <rect x="463.2" y="308" width="184.8" height="18" fill="#fdfaf2"/>
+      <rect x="648.0" y="308" width="58.8" height="18" fill="#4c524f"/>
+    </g>
+    <!-- cell ticks every bit -->
+    <g stroke="rgba(40,64,47,.35)" stroke-width="1">
+      <path d="M68.4,308 V326 M76.8,308 V326 M85.2,308 V326 M93.6,308 V326 M102,308 V326 M110.4,308 V326 M118.8,308 V326 M127.2,308 V326 M135.6,308 V326 M144,308 V326 M152.4,308 V326 M160.8,308 V326 M169.2,308 V326 M177.6,308 V326 M186,308 V326 M194.4,308 V326 M202.8,308 V326 M211.2,308 V326 M219.6,308 V326 M228,308 V326 M236.4,308 V326 M244.8,308 V326 M253.2,308 V326 M261.6,308 V326 M270,308 V326 M278.4,308 V326 M286.8,308 V326 M295.2,308 V326 M303.6,308 V326 M312,308 V326 M320.4,308 V326 M328.8,308 V326 M337.2,308 V326 M345.6,308 V326 M354,308 V326 M362.4,308 V326 M370.8,308 V326 M379.2,308 V326 M387.6,308 V326 M396,308 V326 M404.4,308 V326 M412.8,308 V326 M421.2,308 V326 M429.6,308 V326 M438,308 V326 M446.4,308 V326 M454.8,308 V326 M463.2,308 V326 M471.6,308 V326 M480,308 V326 M488.4,308 V326 M496.8,308 V326 M505.2,308 V326 M513.6,308 V326 M522,308 V326 M530.4,308 V326 M538.8,308 V326 M547.2,308 V326 M555.6,308 V326 M564,308 V326 M572.4,308 V326 M580.8,308 V326 M589.2,308 V326 M597.6,308 V326 M606,308 V326 M614.4,308 V326 M622.8,308 V326 M631.2,308 V326 M639.6,308 V326 M648,308 V326 M656.4,308 V326 M664.8,308 V326 M673.2,308 V326 M681.6,308 V326 M690,308 V326 M698.4,308 V326"/>
+    </g>
+    <rect x="60" y="308" width="646.8" height="18" fill="none" stroke="#28402f" stroke-width="2"/>
+    <!-- highlighted example bit 64: x = 60 + 8.4*64 = 597.6 -->
+    <rect x="597.6" y="305" width="8.4" height="24" fill="none" stroke="#cf5b2e" stroke-width="2.5"/>
+    <!-- flag bit -->
+    <rect x="714" y="308" width="16" height="18" fill="#cf5b2e" stroke="#28402f" stroke-width="2"/>
+    <g font-family="'Barlow Condensed',sans-serif" font-weight="600" font-size="12.5" fill="rgba(65,55,42,.8)">
+      <text x="60" y="345">BIT 0 &middot; 233&deg;</text>
+      <text x="404" y="345" text-anchor="middle">A NEARER RIDGE CUTS A GAP</text>
+      <text x="706" y="345" text-anchor="end">BIT 76 &middot; 309&deg;</text>
+      <text x="722" y="360" text-anchor="end" fill="#cf5b2e">LAND FLAG</text>
+    </g>
+  </svg>
+  <figcaption><span class="figno">Fig 2</span>Top: through a year, the sunset
+  direction sweeps a fan; 77 precomputed one-degree directions cover the whole
+  fan at every mapped latitude. Bottom: one pixel's actual answer is a row of
+  77 bits (white = visible), and a date simply selects a bit. Note the dark gap
+  in the middle of the strip: a nearer ridge can interrupt the visible range,
+  and the bitmask records that faithfully.</figcaption>
+</figure>
+
+<p>That's why scrubbing the date is instant. It's a bit-test per pixel in your
+browser, not a recomputation.</p>
+
+<aside class="depth">
+<span class="note-title">Why a bitmask and not a range</span>
+<p>A pixel's set of visible azimuths is not always one contiguous arc. A near
+ridge can block one band of directions and a far ridge another, leaving a
+visible&ndash;blocked&ndash;visible pattern as the azimuth sweeps. Storing all
+77 bits explicitly (rather than a min/max range) carries those gaps exactly.
+Bit <code>i</code> means "visible at azimuth 233&nbsp;+&nbsp;i degrees"; the
+78th bit is the land/water flag; the 78 bits pack into 10 bytes per pixel; and
+the window, step, and bit count are published in the tileset's
+<code>tilejson.json</code> rather than hard-coded, so you can verify them
+(see <a href="#verify">section 9</a>).</p>
+</aside>
+</section>
+
+<section id="physics">
+<p class="section-label">Section 3 of 9</p>
+<h2>The physics: seeing over a curved, refracting Earth</h2>
+
+<p>Whether you can see the ocean horizon is not just about whether a hill is
+"in the way" on a flat map. Two physical effects run the show.</p>
+
+<h3>The Earth curves away</h3>
+
+<p>Relative to a level line of sight, the Earth's surface drops away with
+distance, slowly at first and then fast. The drop is very close to</p>
+
+<math class="formula" display="block">
+  <mrow>
+    <mi>drop</mi><mo>&#x2061;</mo><mo stretchy="false">(</mo><mi>x</mi><mo stretchy="false">)</mo>
+    <mo>=</mo>
+    <mi>c</mi><mo>&#x2062;</mo><msup><mi>x</mi><mn>2</mn></msup>
+    <mspace width="2.5em"/>
+    <mtext>where</mtext><mspace width="0.4em"/>
+    <mi>c</mi><mo>=</mo>
+    <mfrac>
+      <mrow><mn>1</mn><mo>&#x2212;</mo><mn>2</mn><mi>k</mi></mrow>
+      <mrow><mn>2</mn><mi>R</mi></mrow>
+    </mfrac>
+  </mrow>
+</math>
+
+<p>with <code>R = 6,371,000&nbsp;m</code> (mean Earth radius) and <code>k</code>
+a refraction coefficient explained below. That drop is about 6&nbsp;cm at
+1&nbsp;km, 1.5&nbsp;m at 5&nbsp;km, 5.8&nbsp;m at 10&nbsp;km, 145&nbsp;m at
+50&nbsp;km, and 581&nbsp;m at 100&nbsp;km. This is why a spot 10&nbsp;km of
+dead-flat land away from the water cannot see the ocean at all: the ocean is
+below the bulge of the Earth in between.</p>
+
+<figure class="panel">
+  <svg viewBox="0 0 760 300" role="img" aria-label="Side view of the sea curving away from an observer on the shore. The sea drops 23 metres below level at 20 km, 71 metres at 35 km, and 134 metres at 48 km. A ship at 20 km is hull-down; a 100 metre hill at 48 km falls about 3 metres short of the observer's sightline.">
+    <!-- level line through the sea at the observer's feet -->
+    <line x1="70" y1="120" x2="745" y2="120" stroke="#41372a" stroke-width="1.5" stroke-dasharray="6 5" opacity=".6"/>
+    <!-- sightline from 2 m eyes, tangent at the horizon -->
+    <line x1="70" y1="118" x2="745" y2="152.4" stroke="#cf5b2e" stroke-width="2" stroke-dasharray="7 6"/>
+    <!-- sea surface: y = 120 + 145*((x-70)/670)^2 -->
+    <path d="M70,120 Q407.5,120 745,265" fill="none" stroke="#5a7bb5" stroke-width="3"/>
+    <path d="M70,120 Q407.5,120 745,265 L745,290 L70,290 Z" fill="#aadaff" opacity=".65"/>
+    <!-- observer: 2 m eyes (exaggerated dot) -->
+    <circle cx="70" cy="112" r="5" fill="#f0e6cd" stroke="#28402f" stroke-width="2.5"/>
+    <line x1="70" y1="117" x2="70" y2="120" stroke="#28402f" stroke-width="2.5"/>
+    <!-- horizon touch point at 5.9 km -->
+    <circle cx="149" cy="122" r="5.5" fill="#d99a2b" stroke="#28402f" stroke-width="2"/>
+    <!-- drop arrows -->
+    <g stroke="#cf5b2e" stroke-width="2">
+      <line x1="405" y1="120" x2="405" y2="152"/>
+      <line x1="606" y1="120" x2="606" y2="209"/>
+    </g>
+    <g fill="#cf5b2e">
+      <path d="M405,156 L400,147 L410,147 Z"/>
+      <path d="M606,213 L601,204 L611,204 Z"/>
+    </g>
+    <!-- ship at 20 km: hull hidden below the sightline, mast tip above -->
+    <g>
+      <rect x="326" y="136" width="26" height="7" fill="#4c524f" opacity=".45"/>
+      <line x1="339" y1="136" x2="339" y2="127" stroke="#28402f" stroke-width="2"/>
+      <path d="M339,127 L349,131 L339,134 Z" fill="#cf5b2e"/>
+    </g>
+    <!-- 100 m hill at 48 km: top just under the sightline -->
+    <path d="M688,252 L713,153.5 L738,257" fill="#e3d6b2" stroke="#28402f" stroke-width="2.5" stroke-linejoin="round"/>
+    <!-- labels -->
+    <g font-family="'Barlow Condensed',sans-serif" font-weight="600" font-size="13.5" fill="#41372a">
+      <text x="60" y="98">EYES AT 2 M</text>
+      <text x="120" y="145">YOUR SEA HORIZON: 5.9 KM</text>
+      <text x="413" y="172" fill="#cf5b2e">36 M</text>
+      <text x="616" y="170" fill="#cf5b2e">93 M</text>
+      <text x="240" y="182">SHIP AT 20 KM:</text>
+      <text x="240" y="197">HULL ALREADY HIDDEN</text>
+      <text x="745" y="285" text-anchor="end">100 M HILL AT 48 KM: ABOUT 3 M SHORT</text>
+      <text x="742" y="110" text-anchor="end" fill="rgba(65,55,42,.7)">LEVEL LINE</text>
+      <text x="676" y="180" text-anchor="end" fill="#cf5b2e">SIGHTLINE TO THE HORIZON</text>
+    </g>
+    <g font-family="'IBM Plex Mono',monospace" font-size="11.5" fill="rgba(65,55,42,.75)">
+      <text x="397" y="112">25 KM</text>
+      <text x="598" y="112">40 KM</text>
+    </g>
+  </svg>
+  <figcaption><span class="figno">Fig 3</span>The sea falls away by
+  c&middot;x&sup2; (vertical scale exaggerated, numbers real). From 2&nbsp;m
+  eyes the sea horizon is 5.9&nbsp;km out. A ship 20&nbsp;km out is already
+  hull-down behind the curve, and a 100&nbsp;m hill 48&nbsp;km out falls about
+  3&nbsp;m short of peeking over the horizon at all.</figcaption>
+</figure>
+
+<h3>The atmosphere bends light back down</h3>
+
+<p>Air gets thinner with altitude, so light rays travelling near-horizontally
+refract slightly downward, letting you see a little <em>past</em> the geometric
+horizon. The standard way to model this (used in surveying) is to shrink the
+effective curvature by a factor <code>(1 &minus; 2k)</code> with
+<code>k&nbsp;=&nbsp;0.13</code>. That is equivalent to pretending the Earth is
+about 35% bigger (effective radius &asymp; 8,609&nbsp;km) while light travels
+straight. Both constants are configuration values, not code:
+<code>refraction_coefficient_k&nbsp;=&nbsp;0.13</code> and
+<code>earth_radius_m&nbsp;=&nbsp;6371000</code>, giving
+<code>c&nbsp;&asymp;&nbsp;5.81&times;10&#8315;&#8312;&nbsp;per&nbsp;metre</code>.</p>
+
+<h3>Horizon distance and "Horizon Reach"</h3>
+
+<p>From height <code>h</code> the sea horizon lies at the classical distance</p>
+
+<math class="formula" display="block">
+  <mrow>
+    <msub><mi>d</mi><mtext>horizon</mtext></msub>
+    <mo>=</mo>
+    <msqrt><mfrac><mi>h</mi><mi>c</mi></mfrac></msqrt>
+    <mo>=</mo>
+    <msqrt>
+      <mfrac>
+        <mrow><mn>2</mn><mi>R</mi><mo>&#x2062;</mo><mi>h</mi></mrow>
+        <mrow><mn>1</mn><mo>&#x2212;</mo><mn>2</mn><mi>k</mi></mrow>
+      </mfrac>
+    </msqrt>
+    <mo>&#x2248;</mo>
+    <mn>4.15</mn><mspace width="0.2em"/><mtext>km</mtext>
+    <mo>&#xD7;</mo><msqrt><mi>h</mi></msqrt>
+    <mspace width="1.6em"/>
+    <mtext>(</mtext><mi>h</mi><mtext>&#xA0;in metres)</mtext>
+  </mrow>
+</math>
+
+<p>So eyes at 2&nbsp;m see the sea out to &asymp;&nbsp;5.9&nbsp;km. A
+100&nbsp;m hill commands &asymp;&nbsp;41.5&nbsp;km. A 650&nbsp;m ridge
+commands &asymp;&nbsp;106&nbsp;km.</p>
+
+<p>The engine's visibility test is built on one number per terrain point,
+called its <strong>Horizon Reach</strong>. Measure the distance <code>x</code>
+of each point inland from the coastline (along the sightline direction). Then</p>
+
+<math class="formula" display="block">
+  <mrow>
+    <mi>reach</mi><mo>&#x2061;</mo><mo stretchy="false">(</mo><mi>x</mi><mo>,</mo><mi>h</mi><mo stretchy="false">)</mo>
+    <mo>=</mo>
+    <msqrt><mfrac><mi>h</mi><mi>c</mi></mfrac></msqrt>
+    <mo>&#x2212;</mo><mi>x</mi>
+  </mrow>
+</math>
+
+<p>is how far <em>out to sea, beyond the coastline</em>, that point's own
+horizon extends. A tall coastal cliff has a large reach. A tall point far
+inland may have a small or negative reach: its height is spent just seeing
+over the land in front of it.</p>
+
+<h3>The visibility rule</h3>
+
+<p>The rule the engine applies is a single comparison: you see the ocean horizon
+exactly when your own reach, eyes included, is at least as large as the reach
+of every terrain point between you and the sea.</p>
+
+<math class="formula" display="block">
+  <mrow>
+    <msqrt>
+      <mfrac>
+        <mrow>
+          <msub><mi>h</mi><mtext>you</mtext></msub>
+          <mo>+</mo><mn>2</mn><mspace width="0.15em"/><mtext>m</mtext>
+        </mrow>
+        <mi>c</mi>
+      </mfrac>
+    </msqrt>
+    <mo>&#x2212;</mo><msub><mi>x</mi><mtext>you</mtext></msub>
+    <mo>&#x2265;</mo>
+    <munder>
+      <mo movablelimits="false">max</mo>
+      <mtext>terrain west of you</mtext>
+    </munder>
+    <mrow>
+      <mo>[</mo>
+      <msqrt><mfrac><msub><mi>h</mi><mi>i</mi></msub><mi>c</mi></mfrac></msqrt>
+      <mo>&#x2212;</mo><msub><mi>x</mi><mi>i</mi></msub>
+      <mo>]</mo>
+    </mrow>
+  </mrow>
+</math>
+
+<figure class="panel">
+  <svg class="haloed" viewBox="0 0 760 420" role="img" aria-label="The flattened-Earth frame: the sea is a downward parabola from the coast. A 206 metre coastal hill's tangent sightline touches the sea 56 km out; a 654 metre ridge 20 km inland has a tangent touching 86 km out, passing high over the hill. Whoever reaches farther seaward wins.">
+    <!-- flattened sea-level dashed line -->
+    <line x1="40" y1="210" x2="742" y2="210" stroke="#41372a" stroke-width="1.2" stroke-dasharray="5 5" opacity=".5"/>
+    <!-- distance ticks (seaward of the coast) -->
+    <g stroke="#41372a" stroke-width="1.5" opacity=".6">
+      <line x1="572" y1="205" x2="572" y2="215"/>
+      <line x1="432" y1="205" x2="432" y2="215"/>
+      <line x1="292" y1="205" x2="292" y2="215"/>
+      <line x1="152" y1="205" x2="152" y2="215"/>
+    </g>
+    <!-- sea parabola (real curve, scaled) -->
+    <path d="M40,351.5 L68,337 L96,323.3 L124,310.4 L152,298.2 L180,286.8 L208,276.2 L236,266.4 L264,257.4 L292,249.2 L320,241.8 L348,235.1 L376,229.2 L404,224.1 L432,219.8 L460,216.3 L488,213.5 L516,211.6 L544,210.4 L572,210"
+          fill="none" stroke="#5a7bb5" stroke-width="3.5"/>
+    <!-- coast marker -->
+    <circle cx="572" cy="210" r="5" fill="#5a7bb5" stroke="#28402f" stroke-width="2"/>
+    <!-- inland ground -->
+    <path d="M572,210 L576,211 L589.9,154.5 L604,211 L650.4,213 L684,39.2 L717.6,220.6 L742,222"
+          fill="none" stroke="#28402f" stroke-width="2.5" stroke-linejoin="round"/>
+    <path d="M572,210 L576,211 L589.9,154.5 L604,211 L650.4,213 L684,39.2 L717.6,220.6 L742,222 L742,232 L572,220 Z"
+          fill="#e3d6b2" opacity=".8"/>
+    <!-- hill tangent (pine, dashed): touch (256.4,259.8) to just past the peak -->
+    <line x1="256.4" y1="259.8" x2="618" y2="145.6" stroke="#3c5844" stroke-width="2" stroke-dasharray="6 5"/>
+    <circle cx="256.4" cy="259.8" r="5.5" fill="#d99a2b" stroke="#28402f" stroke-width="2"/>
+    <!-- ridge tangent (ember, dashed): touch (88.8,326.7) to the ridge eye -->
+    <line x1="88.8" y1="326.7" x2="684" y2="39.2" stroke="#cf5b2e" stroke-width="2.5" stroke-dasharray="7 6"/>
+    <circle cx="88.8" cy="326.7" r="5.5" fill="#d99a2b" stroke="#28402f" stroke-width="2"/>
+    <!-- observer on the ridge -->
+    <circle cx="684" cy="33" r="6" fill="#f0e6cd" stroke="#28402f" stroke-width="2.5"/>
+    <!-- reach arrows along the bottom -->
+    <g stroke="#3c5844" stroke-width="2">
+      <line x1="572" y1="374" x2="262" y2="374"/>
+      <line x1="572" y1="369" x2="572" y2="379"/>
+    </g>
+    <path d="M256,374 L268,368 L268,380 Z" fill="#3c5844"/>
+    <g stroke="#cf5b2e" stroke-width="2">
+      <line x1="572" y1="398" x2="95" y2="398"/>
+      <line x1="572" y1="393" x2="572" y2="403"/>
+    </g>
+    <path d="M89,398 L101,392 L101,404 Z" fill="#cf5b2e"/>
+    <!-- labels -->
+    <g font-family="'Barlow Condensed',sans-serif" font-weight="600" font-size="13.5" fill="#41372a">
+      <text x="530" y="115">206 M HILL,</text>
+      <text x="530" y="130">3.2 KM INLAND</text>
+      <text x="748" y="256" text-anchor="end">654 M RIDGE,</text>
+      <text x="748" y="271" text-anchor="end">20 KM INLAND</text>
+      <text x="170" y="252">ITS HORIZON: 56 KM OUT</text>
+      <text x="40" y="312">RIDGE'S HORIZON: 86 KM OUT</text>
+      <text x="330" y="368" fill="#3c5844">HILL'S REACH &middot; 56 KM</text>
+      <text x="270" y="392" fill="#cf5b2e">RIDGE'S REACH &middot; 86 KM &rArr; IT SEES OVER THE HILL</text>
+      <text x="46" y="345" fill="#5a7bb5">THE SEA, FLATTENED: y = &minus;c&middot;x&sup2;</text>
+    </g>
+    <!-- axis numbers last, so their halo cuts the tangents that cross them -->
+    <g font-family="'IBM Plex Mono',monospace" font-size="11.5" fill="rgba(65,55,42,.75)">
+      <text x="565" y="200">0</text>
+      <text x="410" y="200">25 KM</text>
+      <text x="270" y="200">50 KM</text>
+      <text x="130" y="200">75 KM</text>
+      <text x="46" y="200">SEAWARD &larr;</text>
+    </g>
+  </svg>
+  <figcaption><span class="figno">Fig 4</span>The tangent test, drawn to scale
+  with real numbers from a case on the Peninsula coast. In the flattened frame
+  the sea is a downward parabola. The hill's own sightline grazes the sea
+  56&nbsp;km out; the ridge's grazes it 86&nbsp;km out, so the ridge's
+  sightline passes far above the hill and the ridge sees the sunset, even
+  though the hill completely hides the near-shore water from it. Only the
+  largest reach matters.</figcaption>
+</figure>
+
+<p>Why is this correct? Flattening the curved Earth into a diagram turns the
+sea surface into a downward-curving parabola, and "seeing the sunset" means
+drawing a straight line from your eyes that grazes that parabola: the line
+that touches the sea at the horizon. Two tangent lines to the same downward
+parabola never cross on the seaward side of their touch points, so the line
+that touches farther out to sea is higher everywhere inland. Of all the hills
+between you and the coast, the only one that can matter is therefore the one
+whose own horizon extends farthest seaward (the maximum reach), and you clear
+it exactly when your reach meets it. One running maximum per sightline decides
+everything, which is what makes computing this for billions of samples
+tractable.</p>
+
+<aside class="depth">
+<span class="note-title">Properties worth checking</span>
+<ul>
+  <li><em>No terrain at all:</em> the running maximum starts at 0 at the
+  coastline (the sea surface itself), so an unobstructed observer is visible
+  exactly when <code>h + 2 &ge; c&middot;x&sup2;</code>, the classical
+  curvature horizon. A 2&nbsp;m-eye observer on a dead-flat coastal plain goes
+  black beyond &asymp;&nbsp;5.9&nbsp;km inland. That is physically right, not
+  a bug.</li>
+  <li><em>Water and missing data</em> enter as height 0; their reach
+  <code>&minus;x</code> never exceeds the coastline's 0, so open sea, bays,
+  and river mouths never block anything. No special case is needed.</li>
+  <li><em>Terrain below sea level</em> is clamped to 0 as an obstruction (a
+  below-sea surface hides the sea exactly as a sea-level one does, and can
+  never poke above a tangent line). The observer's own height is not clamped
+  before the eye height is added.</li>
+  <li><em>Numerical form:</em> internally, reaches are held scaled by
+  &radic;c, as <code>&radic;h &minus; x&middot;&radic;c</code>. The ordering
+  is identical, and the flat-earth limit (k &rarr; 0.5, c &rarr; 0) degrades
+  to a plain height comparison instead of dividing by zero.</li>
+</ul>
+</aside>
+</section>
+
+<section id="sweep">
+<p class="section-label">Section 4 of 9</p>
+<h2>The sweep: how one direction is computed</h2>
+
+<p>For one azimuth, the engine computes a full yes/no raster (an
+<em>azimuth slice</em>) like this:</p>
+
+<ol>
+  <li><strong>Cast parallel rays</strong> across the region along the
+  <em>reverse</em> of the sunset azimuth, from the ocean toward land: sunset
+  azimuth 280&deg; means rays march inland on bearing 100&deg;. Rays are
+  spaced 1/3&nbsp;arc-second apart (&asymp;&nbsp;10.31&nbsp;m), the same as
+  the sampling step along each ray, so the sample grid is square in the ray's
+  own frame.</li>
+  <li><strong>Find the coast.</strong> Each ray starts at the processing
+  region's western edge, which is required to lie offshore in the open
+  Pacific, and steps inland along its bearing, testing "is this point water?"
+  against the ocean mask until it first hits land. That first land point is
+  the ray's <em>coastline crossing</em>: the zero point for all distances
+  <code>x</code>, and the zero baseline of the running maximum reach.</li>
+  <li><strong>March inland</strong> from the crossing, one 10.31&nbsp;m step
+  at a time. At each step: look up the terrain height (bilinear interpolation
+  of the elevation model), update the running maximum reach, and record a
+  finished visible/blocked verdict for that sample. The sample is visible
+  exactly when its own reach, with 2&nbsp;m of eye height added, meets the
+  running maximum.</li>
+  <li><strong>Transfer verdicts to pixels.</strong> Every output pixel belongs
+  to exactly one ray (the nearest one), and inherits the verdict of the
+  nearest sample along it. Verdicts are computed at sample points and copied,
+  not recomputed per pixel, so a visibility boundary can be off by up to
+  about one cell (~10&nbsp;m).</li>
+</ol>
+
+<figure class="panel">
+  <svg viewBox="0 0 760 330" role="img" aria-label="Top-down view of a processing box. Parallel rays march from the offshore west edge across the coastline. Along one highlighted ray: water samples, the coastline crossing, then visible and blocked verdict samples; a ridge shadows a run of samples which then become visible again.">
+    <!-- Everything inside the box is clipped to it, so fills can run past the
+         edge without eating into the border and rays can be drawn long. -->
+    <defs>
+      <clipPath id="fig5-box"><rect x="30" y="20" width="700" height="272" rx="4"/></clipPath>
+    </defs>
+    <!-- box fill -->
+    <rect x="30" y="20" width="700" height="272" fill="#e3d6b2" rx="4"/>
+    <!-- ocean -->
+    <g clip-path="url(#fig5-box)">
+      <path d="M30,20 L400,20 C360,80 320,140 360,200 C380,240 340,260 330,292 L30,292 Z" fill="#aadaff"/>
+      <path d="M400,20 C360,80 320,140 360,200 C380,240 340,260 330,292" fill="none" stroke="#5a7bb5" stroke-width="2.5"/>
+    </g>
+    <!-- a ridge inland -->
+    <ellipse cx="568" cy="206" rx="26" ry="18" fill="#c9b98e" stroke="#28402f" stroke-width="2"/>
+    <ellipse cx="568" cy="206" rx="12" ry="8" fill="none" stroke="#28402f" stroke-width="1.5" opacity=".6"/>
+    <!-- Parallel rays on bearing 100 deg. Every line spans the same dx=730 and
+         dy=128.8 (slope 0.1764) and is clipped by the box, so the two lower
+         ones run off the bottom edge instead of being shortened by hand -
+         which is what made them non-parallel. Seeds are 36 apart; the gap at
+         y=112 is the highlighted ray below. -->
+    <g stroke="#cf5b2e" stroke-width="1.5" opacity=".45" clip-path="url(#fig5-box)">
+      <line x1="30" y1="40"  x2="760" y2="168.8"/>
+      <line x1="30" y1="76"  x2="760" y2="204.8"/>
+      <line x1="30" y1="148" x2="760" y2="276.8"/>
+      <line x1="30" y1="184" x2="760" y2="312.8"/>
+      <line x1="30" y1="220" x2="760" y2="348.8"/>
+    </g>
+    <!-- highlighted ray at y0=112 -->
+    <line x1="30" y1="112" x2="700" y2="230.3" stroke="#cf5b2e" stroke-width="2.5"/>
+    <path d="M706,231.4 L692,224 L695,237 Z" fill="#cf5b2e"/>
+    <!-- samples along the highlighted ray, every t=34: pos (30+.985t, 112+.174t) -->
+    <g>
+      <circle cx="63.5" cy="117.9" r="4" fill="#aadaff" stroke="#5a7bb5" stroke-width="1.5"/>
+      <circle cx="97.0" cy="123.8" r="4" fill="#aadaff" stroke="#5a7bb5" stroke-width="1.5"/>
+      <circle cx="130.5" cy="129.7" r="4" fill="#aadaff" stroke="#5a7bb5" stroke-width="1.5"/>
+      <circle cx="164.0" cy="135.7" r="4" fill="#aadaff" stroke="#5a7bb5" stroke-width="1.5"/>
+      <circle cx="197.4" cy="141.6" r="4" fill="#aadaff" stroke="#5a7bb5" stroke-width="1.5"/>
+      <circle cx="230.9" cy="147.5" r="4" fill="#aadaff" stroke="#5a7bb5" stroke-width="1.5"/>
+      <circle cx="264.4" cy="153.4" r="4" fill="#aadaff" stroke="#5a7bb5" stroke-width="1.5"/>
+      <circle cx="297.9" cy="159.3" r="4" fill="#aadaff" stroke="#5a7bb5" stroke-width="1.5"/>
+      <circle cx="331.4" cy="165.2" r="4" fill="#aadaff" stroke="#5a7bb5" stroke-width="1.5"/>
+      <!-- coastline crossing -->
+      <circle cx="366" cy="171.3" r="7" fill="#d99a2b" stroke="#28402f" stroke-width="2.5"/>
+      <!-- land verdicts: visible -->
+      <circle cx="399.3" cy="177.2" r="4.5" fill="#fdfaf2" stroke="#28402f" stroke-width="1.8"/>
+      <circle cx="432.8" cy="183.1" r="4.5" fill="#fdfaf2" stroke="#28402f" stroke-width="1.8"/>
+      <circle cx="466.3" cy="189.0" r="4.5" fill="#fdfaf2" stroke="#28402f" stroke-width="1.8"/>
+      <circle cx="499.8" cy="194.9" r="4.5" fill="#fdfaf2" stroke="#28402f" stroke-width="1.8"/>
+      <circle cx="533.2" cy="200.8" r="4.5" fill="#fdfaf2" stroke="#28402f" stroke-width="1.8"/>
+      <!-- the ridge sample itself stays visible; behind it, shadowed -->
+      <circle cx="566.7" cy="206.7" r="4.5" fill="#fdfaf2" stroke="#28402f" stroke-width="1.8"/>
+      <circle cx="600.2" cy="212.6" r="4.5" fill="#4c524f" stroke="#28402f" stroke-width="1.8"/>
+      <circle cx="633.7" cy="218.5" r="4.5" fill="#4c524f" stroke="#28402f" stroke-width="1.8"/>
+      <!-- far enough back, tall ground sees over the ridge again -->
+      <circle cx="667.2" cy="224.4" r="4.5" fill="#fdfaf2" stroke="#28402f" stroke-width="1.8"/>
+    </g>
+    <!-- Border last, so no fill can encroach on it and every side reads the
+         same weight. -->
+    <rect x="30" y="20" width="700" height="272" fill="none" stroke="#28402f" stroke-width="2.5" rx="4"/>
+    <!-- labels -->
+    <g font-family="'Barlow Condensed',sans-serif" font-weight="600" font-size="13.5" fill="#41372a">
+      <text x="44" y="60">OFFSHORE WEST EDGE:</text>
+      <text x="44" y="75">EVERY RAY SEEDS IN WATER</text>
+      <text x="330" y="145">COASTLINE CROSSING (x = 0)</text>
+      <text x="520" y="245">RIDGE SHADOWS THE LEE</text>
+      <text x="470" y="60">SUNSET AZIMUTH 280&deg;</text>
+      <text x="470" y="75">&rArr; RAYS MARCH ON BEARING 100&deg;</text>
+    </g>
+    <!-- legend -->
+    <g font-family="'Barlow Condensed',sans-serif" font-weight="600" font-size="12.5" fill="#41372a">
+      <circle cx="60" cy="312" r="4" fill="#aadaff" stroke="#5a7bb5" stroke-width="1.5"/>
+      <text x="70" y="316">WATER SAMPLE</text>
+      <circle cx="215" cy="312" r="5.5" fill="#d99a2b" stroke="#28402f" stroke-width="2"/>
+      <text x="226" y="316">CROSSING</text>
+      <circle cx="340" cy="312" r="4.5" fill="#fdfaf2" stroke="#28402f" stroke-width="1.8"/>
+      <text x="350" y="316">VISIBLE SAMPLE</text>
+      <circle cx="495" cy="312" r="4.5" fill="#4c524f" stroke="#28402f" stroke-width="1.8"/>
+      <text x="505" y="316">BLOCKED SAMPLE</text>
+    </g>
+  </svg>
+  <figcaption><span class="figno">Fig 5</span>One azimuth slice from above.
+  Parallel rays seed at the box's offshore west edge, find the coastline, then
+  march inland recording a verdict at every ~10&nbsp;m sample. Behind the
+  ridge a run of samples is shadowed, and farther back, higher ground can
+  become visible again. Every output pixel copies the verdict of its nearest
+  sample.</figcaption>
+</figure>
+
+<p>This is repeated for all 77 azimuths, and each pixel's 77 answers are
+packed into its bitmask.</p>
+
+<aside class="depth">
+<span class="note-title">Geometry, parallelism, safeguards</span>
+<ul>
+  <li><em>Flat local frame.</em> Each processing region uses a flat-earth
+  metric anchored at its southwest corner (111,320&nbsp;m per degree of
+  latitude; longitude scaled by cos of the anchor latitude), and rays march as
+  exact straight lines in that frame, with latitude and longitude derived only
+  for data lookups. One consistent geometry end to end means the ray that owns
+  a pixel is, by construction, the ray that marched within half a sample
+  spacing of it. The cost: a frame-straight ray's true compass bearing drifts
+  from the nominal azimuth as cos(latitude) changes, bounded by about
+  0.04&deg; across one 0.1&deg; processing strip. That is far below the
+  1&deg; azimuth step.</li>
+  <li><em>Processing boxes.</em> The coast is covered by 11 hand-drawn
+  rectangles ("boxes"), each with its western edge in open water. Before
+  sweeping, the engine samples the box's entire west edge and hard-errors if
+  more than 5% of the samples are land, because a mis-anchored box would
+  produce plausible-looking garbage. A second preflight verifies the per-ray
+  coast search distance limit covers the whole box, because a ray that gives
+  up before finding the coast yields permanently black pixels.</li>
+  <li><em>Strips and threads.</em> Each box is processed in 0.1&deg;-tall
+  latitude strips. Per strip, the needed elevation and ocean-mask tiles are
+  frozen into read-only caches, and all 77 azimuths run in parallel,
+  lock-free, across CPU cores.</li>
+  <li><em>Bays and straits.</em> A ray to a bay-shore observer crosses the
+  outer Pacific coast first, so the peninsula in between enters the running
+  maximum and blocks low observers naturally, while an observer lined up with
+  a strait (straight out the Golden Gate, say) stays visible. Islands inside
+  a box (the Farallones, the Channel Islands) are ordinary terrain: they
+  block exactly per their own reach. Anything west of a box's western edge
+  does not exist to the model.</li>
+</ul>
+</aside>
+</section>
+
+<section id="data">
+<p class="section-label">Section 5 of 9</p>
+<h2>The input data</h2>
+
+<table>
+  <tr><th>What</th><th>Source</th><th>Notes</th></tr>
+  <tr>
+    <td>Terrain elevation</td>
+    <td>USGS 3DEP 1/3&nbsp;arc-second DEM (~10&nbsp;m grid)</td>
+    <td>Bare-earth model in 1&deg;&times;1&deg; GeoTIFF tiles (84 files,
+    ~26&nbsp;GB on disk). Sampled with bilinear interpolation. Pixels the USGS
+    marks "no data" are water surface and become 0&nbsp;m. Where the same tile
+    exists in multiple acquisition dates, the newest wins.</td>
+  </tr>
+  <tr>
+    <td>Ocean / land boundary</td>
+    <td>OpenStreetMap water polygons (osmdata.openstreetmap.de
+    ocean/coastline set)</td>
+    <td>Rasterized to the same 1/3&nbsp;arc-second grid; looked up by nearest
+    cell. Deliberately OSM rather than a separate coastline product, so the
+    computed coastline matches the basemap you see. Ocean-connected water
+    only: <strong>inland lakes are treated as land</strong> and get a normal
+    verdict.</td>
+  </tr>
+  <tr>
+    <td>Sun position</td>
+    <td>SunCalc (in the browser)</td>
+    <td>Standard low-precision solar formulas; sunset = sun's upper limb at
+    the horizon (altitude &minus;0.833&deg;, the conventional refraction and
+    disc allowance). Sunset azimuth depends on date and latitude; longitude
+    has no practical effect on it.</td>
+  </tr>
+  <tr>
+    <td>Basemap</td>
+    <td>OpenStreetMap via Protomaps</td>
+    <td>Presentation only; it plays no role in the visibility math.</td>
+  </tr>
+</table>
+</section>
+
+<section id="tiles">
+<p class="section-label">Section 6 of 9</p>
+<h2>From verdicts to map tiles</h2>
+
+<p>The engine writes each box as a GeoTIFF whose pixels are the 10-byte
+bitmasks (77 direction bits plus the land flag), with the azimuth window,
+step, bit count, and a format version stamped in the file's metadata.
+Downstream:</p>
+
+<ol>
+  <li><strong>Merge.</strong> The 11 boxes are pasted onto one common
+  1/3&nbsp;arc-second lattice. Boxes deliberately overlap; in an overlap each
+  pixel takes its bytes verbatim from whichever box it sits <em>deepest
+  inside</em> (distance to that box's north, south, and east edges; the
+  offshore west edge doesn't count), which splits each overlap cleanly down
+  its midline. Bit patterns are never blended.</li>
+  <li><strong>Clip to the US.</strong> Pixels outside a US land polygon are
+  zeroed (transparent), so a coast-anchored box reaching into Mexico or
+  Canada doesn't publish verdicts there.</li>
+  <li><strong>Reproject and slice.</strong> The merged raster is reprojected
+  to Web Mercator by nearest-neighbour at zoom 14 (&asymp;&nbsp;3.1&ndash;4.0&nbsp;m
+  per pixel across the coverage, finer than the 10&nbsp;m data, so cells are
+  simply replicated rather than resampled away) and cut into
+  512&times;512-pixel tiles: gzipped raw bytes, no image format. All-zero
+  tiles are skipped entirely.</li>
+  <li><strong>Build the zoom pyramid</strong> (zooms 13 down to 5) by OR-ing
+  each 2&times;2 block of child pixels byte-wise. A zoomed-out pixel shows
+  visible when <em>any</em> of the finer pixels under it is visible at that
+  azimuth. This is exact for "is there a visible spot in here?" but it reads
+  optimistic when zoomed far out. Zoom in for the truth at your feet.</li>
+</ol>
+
+<figure class="panel">
+  <svg viewBox="0 0 760 216" role="img" aria-label="Four zoom-14 cells, three blocked and one visible, are combined with a byte-wise OR into a single visible zoom-13 cell. A smaller cascade shows the same rule repeating up the pyramid.">
+    <!-- 2x2 children -->
+    <g stroke="#28402f" stroke-width="2.5">
+      <rect x="70"  y="40" width="64" height="64" fill="#4c524f"/>
+      <rect x="134" y="40" width="64" height="64" fill="#fdfaf2"/>
+      <rect x="70"  y="104" width="64" height="64" fill="#4c524f"/>
+      <rect x="134" y="104" width="64" height="64" fill="#4c524f"/>
+    </g>
+    <!-- OR arrow -->
+    <g>
+      <line x1="230" y1="104" x2="300" y2="104" stroke="#28402f" stroke-width="2.5"/>
+      <path d="M308,104 L294,97 L294,111 Z" fill="#28402f"/>
+      <rect x="240" y="82" width="50" height="24" rx="7" fill="#cf5b2e"/>
+      <text x="265" y="99" text-anchor="middle" font-family="'IBM Plex Mono',monospace" font-weight="600" font-size="14" fill="#f0e6cd">OR</text>
+    </g>
+    <!-- parent -->
+    <rect x="322" y="72" width="64" height="64" fill="#fdfaf2" stroke="#28402f" stroke-width="2.5"/>
+    <g font-family="'Barlow Condensed',sans-serif" font-weight="600" font-size="13.5" fill="#41372a">
+      <text x="70" y="30">FOUR ZOOM-14 CELLS</text>
+      <text x="322" y="62">ONE ZOOM-13 CELL</text>
+      <text x="70" y="192">ONE VISIBLE CHILD IS ENOUGH: THE PARENT STAYS WHITE</text>
+    </g>
+    <!-- mini cascade -->
+    <g stroke="#28402f" stroke-width="1.5">
+      <rect x="500" y="52" width="20" height="20" fill="#4c524f"/>
+      <rect x="520" y="52" width="20" height="20" fill="#4c524f"/>
+      <rect x="540" y="52" width="20" height="20" fill="#4c524f"/>
+      <rect x="560" y="52" width="20" height="20" fill="#fdfaf2"/>
+      <rect x="500" y="72" width="20" height="20" fill="#4c524f"/>
+      <rect x="520" y="72" width="20" height="20" fill="#4c524f"/>
+      <rect x="540" y="72" width="20" height="20" fill="#4c524f"/>
+      <rect x="560" y="72" width="20" height="20" fill="#4c524f"/>
+      <rect x="500" y="92" width="20" height="20" fill="#4c524f"/>
+      <rect x="520" y="92" width="20" height="20" fill="#fdfaf2"/>
+      <rect x="540" y="92" width="20" height="20" fill="#4c524f"/>
+      <rect x="560" y="92" width="20" height="20" fill="#4c524f"/>
+      <rect x="500" y="112" width="20" height="20" fill="#4c524f"/>
+      <rect x="520" y="112" width="20" height="20" fill="#4c524f"/>
+      <rect x="540" y="112" width="20" height="20" fill="#4c524f"/>
+      <rect x="560" y="112" width="20" height="20" fill="#4c524f"/>
+    </g>
+    <line x1="592" y1="92" x2="614" y2="92" stroke="#28402f" stroke-width="2"/>
+    <path d="M620,92 L610,87 L610,97 Z" fill="#28402f"/>
+    <g stroke="#28402f" stroke-width="1.5">
+      <rect x="628" y="72" width="20" height="20" fill="#4c524f"/>
+      <rect x="648" y="72" width="20" height="20" fill="#fdfaf2"/>
+      <rect x="628" y="92" width="20" height="20" fill="#fdfaf2"/>
+      <rect x="648" y="92" width="20" height="20" fill="#4c524f"/>
+    </g>
+    <line x1="680" y1="92" x2="700" y2="92" stroke="#28402f" stroke-width="2"/>
+    <path d="M706,92 L696,87 L696,97 Z" fill="#28402f"/>
+    <rect x="714" y="82" width="20" height="20" fill="#fdfaf2" stroke="#28402f" stroke-width="1.5"/>
+    <text x="500" y="160" font-family="'Barlow Condensed',sans-serif" font-weight="600" font-size="13.5" fill="rgba(65,55,42,.75)">THE RULE REPEATS UP EVERY ZOOM</text>
+  </svg>
+  <figcaption><span class="figno">Fig 6</span>Downsampling is a byte-wise OR of
+  each 2&times;2 block. That keeps "somewhere in here you can see the sunset"
+  exact at every zoom, at the price of optimism when zoomed way out.</figcaption>
+</figure>
+
+<p>The published tileset is 84,924 tiles totalling &asymp;&nbsp;1.5&nbsp;GB,
+covering 32.53&deg;N&ndash;48.96&deg;N. A <code>tilejson.json</code> sidecar
+carries the wire-format contract (azimuth window 233&ndash;309, step 1, 77
+bits, 10 bytes per pixel, format version 1). The frontend reads all parameters
+from it and refuses a format version it doesn't understand, so the encoding
+can never silently drift.</p>
+</section>
+
+<section id="browser">
+<p class="section-label">Section 7 of 9</p>
+<h2>What happens in your browser</h2>
+
+<ul>
+  <li><strong>Colouring.</strong> For the selected date, the sunset azimuth is
+  computed at the latitude of the <em>map centre</em>, rounded to its bit
+  index, and every visible tile is repainted from raw bytes: flag bit clear
+  &rarr; transparent; date's bit set &rarr; white; otherwise black. The
+  overlay is drawn at 40% opacity with nearest-neighbour resampling (no
+  smoothing: the crisp pixel edges are honest cell boundaries). Panning to a
+  different latitude recomputes the bit index.</li>
+  <li><strong>Tapping a spot</strong> reads the actual 10-byte bitmask of that
+  exact pixel from the sharpest tile loaded, and evaluates it at the spot's
+  own latitude. So does the little year-strip: it is 365 bit-tests of the
+  same pixel, one sunset azimuth per day.</li>
+  <li><strong>US land outside the computed boxes</strong> (far inland, plus
+  coastal areas not yet covered) is painted black by a mask polygon, not by
+  computation. For land well inland this is a safe assumption: seeing a
+  sea-level horizon from 150&nbsp;km inland would take about 1,300&nbsp;m of
+  elevation and a clear diagonal across every coastal range. Near the box
+  edges, though, it is an assumption rather than a result. Non-US land and
+  open ocean outside the tileset stay transparent.</li>
+</ul>
+</section>
+
+<section id="accuracy">
+<p class="section-label">Section 8 of 9</p>
+<h2>Honest accuracy: what was traded for a laptop</h2>
+
+<p>Every dataset like this chooses a point on the accuracy/compute curve. This
+one was deliberately budgeted so the entire coast can be recomputed on a
+single laptop. The full 11-box sweep evaluates on the order of 10&sup1;&sup1;
+terrain samples (77 azimuths times roughly 3&times;10&#8313; samples each) in
+roughly a day of machine time, and re-runs skip boxes whose inputs haven't
+changed. Here is where approximation enters, and which way each one leans:</p>
+
+<h3>Resolution choices (the compute budget)</h3>
+<table>
+  <tr><th>Choice</th><th>Value</th><th>Effect</th></tr>
+  <tr>
+    <td>Azimuth step</td>
+    <td>1&deg; (77 directions)</td>
+    <td>Your date's azimuth is rounded to the nearest whole degree to pick a
+    bit, so up to &plusmn;0.5&deg; of quantization. For scale, the sun's disc
+    is itself ~0.53&deg; wide. Verdicts can flip on dates whose azimuth sits
+    near the edge of a visibility gap. Cost is linear in the number of
+    directions.</td>
+  </tr>
+  <tr>
+    <td>Sample spacing</td>
+    <td>1/3 arc-second &asymp; 10.31&nbsp;m</td>
+    <td>Matches the DEM's native grid; sampling finer than the data mostly
+    buys smoother boundaries, not more truth. Terrain features narrower than
+    ~10&nbsp;m (a notch in a ridge, a narrow gap between rocks) can be missed
+    or invented. Halving the spacing quadruples the work (rays &times;
+    steps).</td>
+  </tr>
+  <tr>
+    <td>Verdict transfer</td>
+    <td>nearest-neighbour</td>
+    <td>Pixels inherit the nearest sample's verdict rather than being
+    re-evaluated at their own centre; visibility boundaries can wobble by
+    about one cell.</td>
+  </tr>
+  <tr>
+    <td>Zoom pyramid</td>
+    <td>2&times;2 OR</td>
+    <td>Zoomed out, a coarse pixel is white if any 10&nbsp;m cell within it
+    is white: a deliberate "there's a visible spot in here" semantic that
+    over-lights large pixels. The base zoom (fully zoomed in) has no such
+    bias.</td>
+  </tr>
+</table>
+
+<h3>Model simplifications</h3>
+<table>
+  <tr><th>Simplification</th><th>Direction of error</th></tr>
+  <tr>
+    <td><strong>Bare-earth terrain.</strong> No buildings, no trees. A city
+    block or a redwood stand in your sightline doesn't block it here; equally,
+    you can't climb a building to see over a ridge.</td>
+    <td>Optimistic in cities and forests; the map answers "does the
+    <em>landscape</em> allow it".</td>
+  </tr>
+  <tr>
+    <td><strong>Fixed refraction, k = 0.13.</strong> Real near-horizon
+    refraction swings with the temperature profile, especially over water at
+    sunset (mirages, looming). Marginal sightlines, the ones grazing a ridge
+    by a few metres over tens of kilometres, genuinely vary from day to day
+    in reality.</td>
+    <td>Either way on borderline cases; standard value on average.</td>
+  </tr>
+  <tr>
+    <td><strong>Fixed 2&nbsp;m eye height</strong> on the ground surface.</td>
+    <td>Slightly pessimistic for overlooks with towers or decks, optimistic
+    if you're sitting down.</td>
+  </tr>
+  <tr>
+    <td><strong>Spherical Earth, parabolic drop.</strong> Mean radius
+    6,371&nbsp;km (no ellipsoid), and the drop c&middot;x&sup2; is the
+    parabolic approximation of the sphere; the difference is under
+    10&nbsp;cm even at 100&nbsp;km. Sea level is the DEM's zero datum; tides
+    are not modelled.</td>
+    <td>Negligible against the ~10&nbsp;m data.</td>
+  </tr>
+  <tr>
+    <td><strong>Weather.</strong> Fog, marine layer, clouds, haze: not
+    modelled, obviously.</td>
+    <td>The map is a geometry answer, not a forecast.</td>
+  </tr>
+</table>
+
+<h3>Data limitations</h3>
+<table>
+  <tr><th>Limitation</th><th>Consequence</th></tr>
+  <tr>
+    <td>DEM vertical error (varies by survey source; metre-scale)</td>
+    <td>A sightline that clears a ridge by a metre or two at long range is
+    within the data's noise, so treat near-boundary pixels as a maybe.</td>
+  </tr>
+  <tr>
+    <td>OSM coastline vs USGS terrain disagree structurally in places (up to
+    ~100&nbsp;m on steep coasts like Big Sur)</td>
+    <td>The white/black field and the drawn coastline can be offset near
+    cliffs. The ray's coastline zero-point carries the same uncertainty,
+    which shifts <code>x</code> for everything on that ray equally, so
+    verdicts are barely affected; the visible seam is cosmetic.</td>
+  </tr>
+  <tr>
+    <td>Lakes are land</td>
+    <td>A lake surface gets an opaque verdict like the ground around it,
+    rather than rendering as water.</td>
+  </tr>
+  <tr>
+    <td>Box seams</td>
+    <td>Where two boxes overlap, each pixel's verdict comes wholesale from
+    one box. The two boxes compute the same physics on differently-anchored
+    sample grids, so pixels within ~1 cell of a visibility boundary may
+    resolve differently on each side of a seam.</td>
+  </tr>
+</table>
+
+<h3>Frontend approximations</h3>
+<ul>
+  <li>The whole-map tint uses one azimuth, computed at the map centre's
+  latitude. Across a tall viewport the true azimuth varies slightly with
+  latitude (well under the 1&deg; bin at city scale; the tap-a-spot verdict
+  always uses the spot's exact latitude).</li>
+  <li>SunCalc's azimuth is good to a few tenths of a degree, below the
+  1&deg; quantization it feeds.</li>
+</ul>
+</section>
+
+<section id="verify">
+<p class="section-label">Section 9 of 9</p>
+<h2>Check it yourself</h2>
+
+<p>The rendered map involves no hidden server logic. Everything the browser
+shows is derivable from public, static files you can fetch and decode:</p>
+
+<ol>
+  <li><strong>Read the contract:</strong>
+  <a href="tiles/tilejson.json"><code>tiles/tilejson.json</code></a> declares
+  the azimuth window (233&ndash;309&deg;), step (1&deg;), bit count (77),
+  bytes per pixel (10), tile size (512), zoom range (5&ndash;14), and format
+  version (1).</li>
+  <li><strong>Fetch any tile:</strong> <code>tiles/{z}/{x}/{y}.bin</code>
+  (standard XYZ Web Mercator scheme). Each is a gzip stream of
+  512&nbsp;&times;&nbsp;512&nbsp;&times;&nbsp;10 bytes, row-major from the
+  tile's northwest corner, 10 bytes per pixel, no header.</li>
+  <li><strong>Decode a pixel:</strong> for pixel (px, py), the bytes are at
+  offset <code>(py&middot;512 + px)&middot;10</code>. Bit <code>i</code>
+  (packed LSB-first: byte <code>i&nbsp;&gt;&gt;&nbsp;3</code>, mask
+  <code>1&nbsp;&lt;&lt;&nbsp;(i&nbsp;&amp;&nbsp;7)</code>) is the verdict for
+  azimuth <code>233&nbsp;+&nbsp;i</code> degrees; bit 77 is the land flag.
+  Compare against what the map shows for a date with that sunset azimuth.</li>
+  <li><strong>Spot-check the physics</strong> against reality: stand somewhere
+  the map calls white at today's azimuth and watch. The authors' own
+  regression suite pins known cases (Ocean Beach in San Francisco must never
+  be black, for example), the C++ packer and the JavaScript reader are held to
+  the same bit layout by a shared test-vector file, and a trace tool prints
+  every ~10&nbsp;m sample of the exact ray any chosen pixel inherited its
+  verdict from.</li>
+</ol>
+
+<figure class="panel">
+  <svg viewBox="0 0 760 250" role="img" aria-label="Byte layout of one pixel: ten bytes. Byte 0 expands to bits 0 through 7, azimuths 233 to 240. Byte 9 expands to bits 72 through 79: azimuths 305 to 309, the land flag at bit 77, and two unused zero bits.">
+    <text x="60" y="26" font-family="'IBM Plex Mono',monospace" font-size="13.5" fill="#41372a">one pixel = 10 bytes, at offset (py&middot;512 + px)&middot;10</text>
+    <!-- ten bytes -->
+    <g stroke="#28402f" stroke-width="2" font-family="'IBM Plex Mono',monospace" font-size="12">
+      <rect x="60"  y="40" width="64" height="34" fill="#fdfaf2"/>
+      <rect x="124" y="40" width="64" height="34" fill="#f0e6cd"/>
+      <rect x="188" y="40" width="64" height="34" fill="#fdfaf2"/>
+      <rect x="252" y="40" width="64" height="34" fill="#f0e6cd"/>
+      <rect x="316" y="40" width="64" height="34" fill="#fdfaf2"/>
+      <rect x="380" y="40" width="64" height="34" fill="#f0e6cd"/>
+      <rect x="444" y="40" width="64" height="34" fill="#fdfaf2"/>
+      <rect x="508" y="40" width="64" height="34" fill="#f0e6cd"/>
+      <rect x="572" y="40" width="64" height="34" fill="#fdfaf2"/>
+      <rect x="636" y="40" width="64" height="34" fill="#f0e6cd"/>
+    </g>
+    <g font-family="'IBM Plex Mono',monospace" font-size="12.5" fill="#41372a">
+      <text x="92"  y="62" text-anchor="middle">b0</text>
+      <text x="156" y="62" text-anchor="middle">b1</text>
+      <text x="220" y="62" text-anchor="middle">b2</text>
+      <text x="284" y="62" text-anchor="middle">b3</text>
+      <text x="348" y="62" text-anchor="middle">b4</text>
+      <text x="412" y="62" text-anchor="middle">b5</text>
+      <text x="476" y="62" text-anchor="middle">b6</text>
+      <text x="540" y="62" text-anchor="middle">b7</text>
+      <text x="604" y="62" text-anchor="middle">b8</text>
+      <text x="668" y="62" text-anchor="middle">b9</text>
+    </g>
+    <!-- connectors -->
+    <path d="M60,78 L60,120 M124,78 L268,120" stroke="rgba(40,64,47,.5)" stroke-width="1.5" fill="none"/>
+    <path d="M636,78 L468,150 M700,78 L724,150" stroke="rgba(40,64,47,.5)" stroke-width="1.5" fill="none"/>
+    <!-- byte 0 expansion: bits 0..7 -->
+    <g stroke="#28402f" stroke-width="1.8">
+      <rect x="60"  y="122" width="26" height="24" fill="#fdfaf2"/>
+      <rect x="86"  y="122" width="26" height="24" fill="#fdfaf2"/>
+      <rect x="112" y="122" width="26" height="24" fill="#fdfaf2"/>
+      <rect x="138" y="122" width="26" height="24" fill="#fdfaf2"/>
+      <rect x="164" y="122" width="26" height="24" fill="#fdfaf2"/>
+      <rect x="190" y="122" width="26" height="24" fill="#fdfaf2"/>
+      <rect x="216" y="122" width="26" height="24" fill="#fdfaf2"/>
+      <rect x="242" y="122" width="26" height="24" fill="#fdfaf2"/>
+    </g>
+    <g font-family="'IBM Plex Mono',monospace" font-size="10.5" fill="#41372a">
+      <text x="73"  y="138" text-anchor="middle">0</text>
+      <text x="99"  y="138" text-anchor="middle">1</text>
+      <text x="125" y="138" text-anchor="middle">2</text>
+      <text x="151" y="138" text-anchor="middle">3</text>
+      <text x="177" y="138" text-anchor="middle">4</text>
+      <text x="203" y="138" text-anchor="middle">5</text>
+      <text x="229" y="138" text-anchor="middle">6</text>
+      <text x="255" y="138" text-anchor="middle">7</text>
+      <text x="73"  y="162" text-anchor="middle">233&deg;</text>
+      <text x="255" y="162" text-anchor="middle">240&deg;</text>
+      <text x="164" y="162" text-anchor="middle">...</text>
+    </g>
+    <text x="60" y="185" font-family="'Barlow Condensed',sans-serif" font-weight="600" font-size="13" fill="#41372a">BYTE 0 = BITS 0&ndash;7 (LSB FIRST)</text>
+    <!-- byte 9 expansion: bits 72..79 -->
+    <g stroke="#28402f" stroke-width="1.8">
+      <rect x="440" y="152" width="30" height="24" fill="#fdfaf2"/>
+      <rect x="470" y="152" width="30" height="24" fill="#fdfaf2"/>
+      <rect x="500" y="152" width="30" height="24" fill="#fdfaf2"/>
+      <rect x="530" y="152" width="30" height="24" fill="#fdfaf2"/>
+      <rect x="560" y="152" width="30" height="24" fill="#fdfaf2"/>
+      <rect x="590" y="152" width="30" height="24" fill="#cf5b2e"/>
+      <rect x="620" y="152" width="30" height="24" fill="#d5cdba"/>
+      <rect x="650" y="152" width="30" height="24" fill="#d5cdba"/>
+    </g>
+    <g font-family="'IBM Plex Mono',monospace" font-size="10.5" fill="#41372a">
+      <text x="455" y="168" text-anchor="middle">72</text>
+      <text x="485" y="168" text-anchor="middle">73</text>
+      <text x="515" y="168" text-anchor="middle">74</text>
+      <text x="545" y="168" text-anchor="middle">75</text>
+      <text x="575" y="168" text-anchor="middle">76</text>
+      <text x="605" y="168" text-anchor="middle" fill="#f0e6cd">77</text>
+      <text x="635" y="168" text-anchor="middle">0</text>
+      <text x="665" y="168" text-anchor="middle">0</text>
+      <text x="455" y="192" text-anchor="middle">305&deg;</text>
+      <text x="575" y="192" text-anchor="middle">309&deg;</text>
+    </g>
+    <g font-family="'Barlow Condensed',sans-serif" font-weight="600" font-size="13">
+      <text x="590" y="210" fill="#cf5b2e">BIT 77: LAND FLAG</text>
+      <text x="620" y="226" fill="rgba(65,55,42,.7)">BITS 78&ndash;79: UNUSED</text>
+      <text x="440" y="210" fill="#41372a">BYTE 9 = BITS 72&ndash;79</text>
+    </g>
+  </svg>
+  <figcaption><span class="figno">Fig 7</span>The wire format of a single
+  pixel, exactly as it sits in a downloaded tile. Anyone with a gzip
+  decompressor can audit any pixel on the map against these ten bytes.</figcaption>
+</figure>
+</section>
+
+<section id="constants">
+<p class="section-label">Reference</p>
+<h2>Appendix: every constant in one table</h2>
+
+<table>
+  <tr><th>Parameter</th><th>Value</th><th>Meaning</th></tr>
+  <tr><td><code>refraction_coefficient_k</code></td><td>0.13</td><td>Standard terrestrial refraction coefficient; curvature scaled by (1&minus;2k)</td></tr>
+  <tr><td><code>earth_radius_m</code></td><td>6,371,000</td><td>Mean Earth radius R</td></tr>
+  <tr><td>c = (1&minus;2k)/(2R)</td><td>&asymp; 5.81&times;10&#8315;&#8312; m&#8315;&sup1;</td><td>Effective curvature; drop = c&middot;x&sup2;; horizon = &radic;(h/c)</td></tr>
+  <tr><td><code>observer_eye_height_m</code></td><td>2</td><td>Eye height above bare ground</td></tr>
+  <tr><td><code>coast_obstruction_skip_m</code></td><td>0</td><td>Passable-foreshore depth (disabled)</td></tr>
+  <tr><td><code>cell_per_degree</code></td><td>10,800</td><td>Output grid: 1/3 arc-second cells</td></tr>
+  <tr><td><code>sample_spacing_arcsec</code></td><td>1/3&Prime; (&asymp; 10.31 m)</td><td>Ray spacing and march step (one knob)</td></tr>
+  <tr><td><code>meters_per_degree_lat</code></td><td>111,320</td><td>Flat-frame metric</td></tr>
+  <tr><td><code>azimuth_min/max/step</code></td><td>233&deg; / 309&deg; / 1&deg;</td><td>77 swept sunset directions</td></tr>
+  <tr><td>bits per pixel</td><td>77 + 1 flag = 78 &rarr; 10 bytes</td><td>LSB-first; bit i = azimuth 233+i; bit 77 = land flag</td></tr>
+  <tr><td><code>strip_height_deg</code></td><td>0.1&deg;</td><td>Latitude strip per freeze-and-sweep pass</td></tr>
+  <tr><td><code>west_edge_max_land_frac</code></td><td>0.05</td><td>Preflight: max land fraction on a box's offshore west edge</td></tr>
+  <tr><td><code>coast_march_max_km</code></td><td>999</td><td>Per-ray coast-search give-up (preflight-checked to cover each box)</td></tr>
+  <tr><td>Processing boxes</td><td>11</td><td>Coast coverage, 32.53&ndash;48.96&deg;N; deliberate overlaps, deepest-interior merge</td></tr>
+  <tr><td>Tile pyramid</td><td>z5&ndash;z14, 512 px, gzip raw</td><td>84,924 tiles &asymp; 1.5 GB; base zoom &asymp; 3&ndash;4 m/px; OR-downsampled</td></tr>
+  <tr><td>Sunset definition</td><td>upper limb at &minus;0.833&deg;</td><td>SunCalc's standard sunset; its azimuth picks the bit</td></tr>
+</table>
+</section>
+
+</main>
+
+<footer>
+  <p>All parameters above are configuration values of the offline pipeline and
+  are embedded in the published tileset's <code>tilejson.json</code>; none are
+  hard-coded in the page you're reading. If a number here and the tileset
+  metadata ever disagree, trust the tileset: it is generated, while this page
+  is written.</p>
+  <p><a href="./">&larr; Back to the map</a></p>
+</footer>
+
+</body>
+</html>

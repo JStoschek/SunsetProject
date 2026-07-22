@@ -44,7 +44,7 @@ IMMUT="public, max-age=31536000, immutable"       # content-addressed-ish data (
 # Anything NOT listed here is intentionally not deployed (dev-only artifacts
 # like boxes.html, encode_azimuth.js, tests/, and the source-only us_land.geojson).
 # ---------------------------------------------------------------------------
-HTML_FILES=(index.html)
+HTML_FILES=(index.html how-it-works.html)
 APP_JS=(bit_layout.js colorizer.js fill_mask.js format_guard.js sunset_azimuth.js)
 GEOJSON_FILES=(us_land_fill.geojson)
 # vendor/ is synced wholesale (its *.js and *.css).
@@ -145,8 +145,9 @@ preflight
 case "$CMD" in
   frontend) deploy_frontend
             # invalidate only the code paths — leaves tile/pmtiles edge caches warm
-            invalidate "/" "/index.html" "/vendor/*" "/tiles/tilejson.json" \
+            invalidate "/" "/vendor/*" "/tiles/tilejson.json" \
                        "/robots.txt" "/sitemap.xml" "/og-image.png" \
+                       $(printf '/%s ' "${HTML_FILES[@]}") \
                        $(printf '/%s ' "${APP_JS[@]}") $(printf '/%s ' "${GEOJSON_FILES[@]}") ;;
   tiles)    deploy_tiles
             invalidate "/tiles/*" ;;            # 1 path; evicts changed tiles, keeps everything else warm

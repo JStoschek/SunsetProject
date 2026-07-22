@@ -102,7 +102,7 @@
   .ctl-stack{position:fixed;top:16px;right:16px;z-index:10;display:flex;
     flex-direction:column;gap:8px;}
   .ctl-btn{width:40px;height:40px;display:flex;align-items:center;justify-content:center;
-    cursor:pointer;color:var(--pine);background:var(--kraft);
+    cursor:pointer;color:var(--pine);background:var(--kraft);text-decoration:none;
     border:2px solid var(--pine);border-radius:var(--radius);
     box-shadow:var(--plate-shadow);
     transition:transform .16s ease,background .16s ease;}
@@ -302,6 +302,9 @@
     font-weight:600;font-size:14px;letter-spacing:.14em;text-transform:uppercase;
     transition:background .16s ease;}
   .intro-go:hover{background:var(--pine-2);}
+  .intro-more{margin:10px 0 0;text-align:center;font-size:12.5px;}
+  .intro-more a{color:var(--ember);text-decoration:none;border-bottom:1px solid rgba(207,91,46,.4);}
+  .intro-more a:hover{border-bottom-color:var(--ember);}
 
   .maplibregl-ctrl-attrib{font-size:10px;}
 
@@ -405,13 +408,15 @@
     <button class="ctl-btn" id="zoom-out" aria-label="Zoom out">
       <svg width="15" height="15" viewBox="0 0 15 15"><path d="M2 7.5h11" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
     </button>
-    <button class="ctl-btn" id="help" aria-label="What is this map?">
+    <!-- A real link, not a button: browser back, middle-click-to-new-tab and
+         "copy link address" all come for free, and the page is crawlable. -->
+    <a class="ctl-btn" id="help" href="./how-it-works.html" aria-label="How this map works">
       <svg width="15" height="15" viewBox="0 0 15 15" aria-hidden="true">
         <path d="M5.1 5.2a2.5 2.5 0 1 1 2.6 2.9v1.6" fill="none" stroke="currentColor"
               stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
         <circle cx="7.7" cy="12.3" r="1" fill="currentColor"/>
       </svg>
-    </button>
+    </a>
   </div>
   <div class="toast" id="toast" role="status"></div>
 
@@ -506,6 +511,7 @@
         </li>
       </ul>
       <button class="intro-go" id="intro-go">Show me the map</button>
+      <p class="intro-more"><a href="./how-it-works.html">How the map works &rarr;</a></p>
     </div>
   </div>
 
@@ -1354,7 +1360,8 @@
     introScrim.addEventListener('click', (e) => {
       if (e.target === introScrim) closeIntro();   // click-off the card
     });
-    document.getElementById('help').addEventListener('click', openIntro);
+    // The ? control is now a link to how-it-works.html, so the intro card is
+    // first-visit only; its "how this works" link is the way back to the detail.
     if (!introSeen()) openIntro();
 
     // ═══ Locate me + zoom ════════════════════════════════════════════════════
