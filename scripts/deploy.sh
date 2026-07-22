@@ -54,6 +54,19 @@ SEO_FILES=(
   "sitemap.xml|sitemap.xml|application/xml"
   "og-image.png|og-image.png|image/png"   # 1200x630 social preview; skipped until it exists
 )
+# Site icons: same (localfile, s3key, content-type) triple form. All served from
+# the root, because that is where browsers (and Google) look for them.
+ICON_FILES=(
+  "favicon.ico|favicon.ico|image/x-icon"
+  "favicon-32.png|favicon-32.png|image/png"
+  "favicon-48.png|favicon-48.png|image/png"
+  "favicon-96.png|favicon-96.png|image/png"
+  "apple-touch-icon.png|apple-touch-icon.png|image/png"
+  "icon-192.png|icon-192.png|image/png"
+  "icon-512.png|icon-512.png|image/png"
+  "icon-maskable-512.png|icon-maskable-512.png|image/png"
+  "site.webmanifest|site.webmanifest|application/manifest+json"
+)
 
 # ---------------------------------------------------------------------------
 DRY_RUN=""; DO_INVALIDATE=1; ASSUME_YES=0
@@ -88,6 +101,11 @@ preflight() {
   fi
 }
 
+icon_paths() { # the s3 keys from ICON_FILES, as CloudFront invalidation paths
+  local spec key
+  for spec in "${ICON_FILES[@]}"; do IFS='|' read -r _ key _ <<< "$spec"; printf '/%s ' "$key"; done
+}
+
 cp1() { # cp1 <localfile> <s3key> <content-type> <cache-control>
   local f="$1" key="$2" ct="$3" cc="$4"
   [ -f "$f" ] || { echo "  skip (missing): $f"; return 0; }
@@ -99,7 +117,7 @@ deploy_frontend() {
   for f in "${HTML_FILES[@]}";    do cp1 "$FRONTEND_DIR/$f" "$f" "text/html"            "$SHORT"; done
   for f in "${APP_JS[@]}";        do cp1 "$FRONTEND_DIR/$f" "$f" "application/javascript" "$SHORT"; done
   for f in "${GEOJSON_FILES[@]}"; do cp1 "$FRONTEND_DIR/$f" "$f" "application/geo+json"   "$SHORT"; done
-  for spec in "${SEO_FILES[@]}"; do
+  for spec in "${SEO_FILES[@]}" "${ICON_FILES[@]}"; do
     IFS='|' read -r sf skey sct <<< "$spec"
     cp1 "$FRONTEND_DIR/$sf" "$skey" "$sct" "$SHORT"
   done
@@ -146,7 +164,7 @@ case "$CMD" in
   frontend) deploy_frontend
             # invalidate only the code paths — leaves tile/pmtiles edge caches warm
             invalidate "/" "/vendor/*" "/tiles/tilejson.json" \
-                       "/robots.txt" "/sitemap.xml" "/og-image.png" \
+                       "/robots.txt" "/sitemap.xml" "/og-image.png" $(icon_paths) \
                        $(printf '/%s ' "${HTML_FILES[@]}") \
                        $(printf '/%s ' "${APP_JS[@]}") $(printf '/%s ' "${GEOJSON_FILES[@]}") ;;
   tiles)    deploy_tiles
