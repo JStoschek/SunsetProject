@@ -25,8 +25,9 @@ struct PipelineConfig {
     double sample_spacing_arcsec;      ///< Visibility Sample Grid spacing (ADR-0014):
                                        ///< drives BOTH the perp ray spacing and the
                                        ///< along march step (square in the ray frame).
-                                       ///< Lower = sharper visibility boundaries,
-                                       ///< linearly more compute.
+                                       ///< Lower = sharper visibility boundaries;
+                                       ///< cost scales with 1/s² (halving the spacing
+                                       ///< roughly quadruples the sweep work).
 
     // ── Azimuth sweep ───────────────────────────────────────────────────
     double azimuth_min_deg;            ///< inclusive lower sunset azimuth
